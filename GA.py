@@ -163,7 +163,7 @@ def apply_thresholds(image, thresholds):
 # Initialize CSV file with headers
 def initialize_csv(output_path):
     csv_file = os.path.join(output_path, "GA_experiment_results.csv")
-    header = ['Seed', 'Image', 'Level', 'Method', 'Fitness', 'Thresholds', 'SSIM', 'MSE', 'PSNR', 'Uniformity']
+    header = ['Seed', 'Runtime', 'Image', 'Level', 'Method', 'Fitness', 'Thresholds', 'SSIM', 'MSE', 'PSNR', 'Uniformity']
 
     if not os.path.exists(csv_file):
         with open(csv_file, 'w', newline='') as f:
@@ -178,6 +178,10 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
     results = []
     csv_file = initialize_csv(output_path)
 
+    # create folder for thresholded images
+    images_output_path = os.path.join(output_path, "imagesPerThresholdLevel")
+    os.makedirs(images_output_path, exist_ok=True)
+
     for filename in os.listdir(folder_path):
         if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif')):
             filepath = os.path.join(folder_path, filename)
@@ -189,20 +193,24 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
             for fitness_function in ["kapur", "otsu"]:
                 for num_thresholds in threshold_levels:
                     # 1. Generate and Set the Seed for this specific run
-                    start_time = time.time()
-                    run_seed = int((start_time * 1000) % 1000) + 1
+                    run_seed = int((time.time() * 1000) % 1000) + 1
                     random.seed(run_seed)
                     np.random.seed(run_seed)
 
-                    print(
-                        f"--- Starting Experiment for {filename} {fitness_function} {num_thresholds} with Seed: {run_seed} ---")
+                    print(f"--- Starting Experiment for {filename} {fitness_function} {num_thresholds} with Seed: {run_seed} ---")
 
-                    # 2. Run your GA for a specific configuration
+                    # Track runtime
+                    start_time = time.time()
+
+                    # 2. Run GA
                     params = param_settings[num_thresholds]
                     ga = GeneticAlgorithm(params=params, num_thresholds=num_thresholds,
                                           image=image, fitness_function=fitness_function,
                                           seed=run_seed)
                     best_solution, best_fitness = ga.evolve()
+
+                    # Runtime in milliseconds
+                    runtime = int((time.time() - start_time) * 1000)
 
                     thresholded_image = apply_thresholds(image, best_solution)
 
@@ -211,37 +219,43 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
                     ssim_value = ssim(image, thresholded_image)
                     uniformity_value = calculate_uniformity(thresholded_image)
 
-                    # Store results for Excel
+                    # Save thresholded image
+                    image_save_name = f"{os.path.splitext(filename)[0]}_level{num_thresholds}_{fitness_function}.png"
+                    save_path = os.path.join(images_output_path, image_save_name)
+                    cv2.imwrite(save_path, thresholded_image)
+
+                    # Store results
                     results.append({
+                        'Seed': run_seed,
+                        'Runtime': runtime,
                         'Image': filename,
+                        'Level': num_thresholds,
                         'Method': fitness_function,
-                        'Thresholds': num_thresholds,
-                        'Best Solution': best_solution,
                         'Fitness': best_fitness,
+                        'Thresholds': best_solution,
                         'SSIM': ssim_value,
                         'MSE': mse_value,
                         'PSNR': psnr_value,
-                        'Uniformity': uniformity_value,
-                        'Seed': run_seed
+                        'Uniformity': uniformity_value
                     })
 
-                    # 3. Store the results in CSV immediately
+                    # Save immediately to CSV
                     with open(csv_file, 'a', newline='') as f:
                         writer = csv.writer(f)
                         writer.writerow([
-                            run_seed, filename, num_thresholds, fitness_function,
+                            run_seed, runtime, filename, num_thresholds, fitness_function,
                             best_fitness, str(best_solution), ssim_value,
                             mse_value, psnr_value, uniformity_value
                         ])
 
-                    print(
-                        f"--- Results saved. Best Fitness for {num_thresholds}-level {fitness_function}: {best_fitness:.6f} ---")
+                    print(f"--- Results saved. Best Fitness for {num_thresholds}-level {fitness_function}: {best_fitness:.6f} ---")
                     print(f"{filename} {fitness_function} {num_thresholds} -> "
                           f"Thresholds {best_solution}, Fitness {best_fitness:.6f}, "
                           f"SSIM {ssim_value:.4f}, MSE {mse_value:.2f}, "
-                          f"PSNR {psnr_value:.2f}, Uniformity {uniformity_value:.4f}")
+                          f"PSNR {psnr_value:.2f}, Uniformity {uniformity_value:.4f}, "
+                          f"Runtime {runtime} ms")
 
-    # Save to Excel as well
+    # Save to Excel
     df = pd.DataFrame(results)
     output_file = os.path.join(output_path, "GA_results.xlsx")
     df.to_excel(output_file, index=False)
