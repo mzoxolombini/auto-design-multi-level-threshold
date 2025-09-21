@@ -231,6 +231,9 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
                     print(f"Could not load image: {filename}")
                     continue
 
+                # Calculate histogram once for the image
+                hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+
                 for fitness_function_name in ["kapur", "otsu"]:
                     for num_thresholds in threshold_levels:
                         if num_thresholds not in param_settings:
@@ -266,12 +269,18 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
                         ssim_value = ssim(image_normalized, thresholded_normalized, data_range=1.0)
                         uniformity_value = calculate_uniformity(thresholded_image)
 
+                        # Calculate both fitness values
+                        kapur_value = calculate_entropy(hist, best_solution)
+                        otsu_value = calculate_otsu(hist, best_solution)
+
                         results.append({
                             'image_name': filename,
                             'fitness_function': fitness_function_name,
                             'thresholding_level': num_thresholds,
                             'threshold_value': best_solution,
                             'fitness_value': best_fitness,
+                            'Kapur_Value': kapur_value,
+                            'Otsu_Value': otsu_value,
                             'SSIM': ssim_value,
                             'MSE': mse_value,
                             'PSNR': psnr_value,
@@ -299,6 +308,8 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
 
         # Format the numeric columns for better Excel display
         df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:,.8f}")
+        df['Kapur_Value'] = df['Kapur_Value'].apply(lambda x: f"{x:,.8f}")
+        df['Otsu_Value'] = df['Otsu_Value'].apply(lambda x: f"{x:,.8f}")
         df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:,.7f}")
         df['MSE'] = df['MSE'].apply(lambda x: f"{x:,.7f}")
         df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:,.7f}")
