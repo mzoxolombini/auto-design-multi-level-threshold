@@ -88,7 +88,7 @@ def calculate_metrics(image, thresholds):
     histogram, _ = np.histogram(segmented_image, bins=256, range=(0, 256))
     uniformity_value = np.sum((histogram / histogram.sum()) ** 2)
 
-    return ssim_value, mse_value, psnr_value, uniformity_value
+    return ssim_value, mse_value, psnr_value, uniformity_value, segmented_image
 
 
 # ABC Algorithm
@@ -171,12 +171,16 @@ def otsu_fitness(image, thresholds):
 def main():
     input_folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
     results_folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    images_folder = os.path.join(results_folder, "imagesPerThresholdLevel_ABC")
 
     if not os.path.exists(results_folder):
         os.makedirs(results_folder)
 
+    if not os.path.exists(images_folder):
+        os.makedirs(images_folder)
+
     results = []
-    threshold_levels = range(2, 11)  # Threshold levels from 2 to 6
+    threshold_levels = range(2, 11)  # Threshold levels from 2 to 10
 
     for image_file in os.listdir(input_folder):
         image_path = os.path.join(input_folder, image_file)
@@ -207,7 +211,11 @@ def main():
                         image, num_thresholds, otsu_fitness, colony_size=50, max_cycles=200, limit=75
                     )
 
-                ssim_value, mse_value, psnr_value, uniformity_value = calculate_metrics(image, thresholds)
+                # Calculate execution time
+                execution_time_ms = (time.time() - start_time) * 1000
+
+                ssim_value, mse_value, psnr_value, uniformity_value, segmented_image = calculate_metrics(image,
+                                                                                                         thresholds)
 
                 # Convert thresholds to regular Python integers to avoid np.int64 in Excel
                 thresholds_list = [int(t) for t in sorted(thresholds)]
@@ -222,16 +230,24 @@ def main():
                     'MSE': mse_value,
                     'PSNR': psnr_value,
                     'Uniformity Measure': uniformity_value,
-                    'Random Seed': run_seed
+                    'Random Seed': run_seed,
+                    'Execution Time (ms)': execution_time_ms
                 })
 
                 print(f"Processed {image_file} with {num_thresholds} thresholds using {fitness_function_name} fitness: "
                       f"Best Thresholds {thresholds_list}, Fitness {fitness_value:.6f}, SSIM {ssim_value:.6f}, "
-                      f"MSE {mse_value:.6f}, PSNR {psnr_value:.6f}, Uniformity {uniformity_value:.6f}, Seed {run_seed}")
+                      f"MSE {mse_value:.6f}, PSNR {psnr_value:.6f}, Uniformity {uniformity_value:.6f}, Seed {run_seed}, "
+                      f"Time {execution_time_ms:.2f}ms")
+
+                # Save segmented image
+                image_name_base = os.path.splitext(image_file)[0]
+                output_filename = f"{image_name_base}_{fitness_function_name}_{num_thresholds}_thresholds.png"
+                output_path = os.path.join(images_folder, output_filename)
+                cv2.imwrite(output_path, segmented_image)
 
     # Save results to an Excel file
     results_df = pd.DataFrame(results)
-    excel_path = os.path.join(results_folder, "base_ABC_results.xlsx")
+    excel_path = os.path.join(results_folder, "ABC_results.xlsx")
 
     # Convert threshold values to regular integers to avoid np.int64 issues
     results_df['threshold_value'] = results_df['threshold_value'].apply(lambda x: [int(val) for val in x])
@@ -240,6 +256,7 @@ def main():
     results_df['MSE'] = results_df['MSE'].apply(lambda x: f"{x:,.7f}")
     results_df['PSNR'] = results_df['PSNR'].apply(lambda x: f"{x:,.7f}")
     results_df['Uniformity Measure'] = results_df['Uniformity Measure'].apply(lambda x: f"{x:,.7f}")
+    results_df['Execution Time (ms)'] = results_df['Execution Time (ms)'].apply(lambda x: f"{x:,.2f}")
 
     results_df.to_excel(excel_path, index=False)
 
