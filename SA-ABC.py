@@ -356,6 +356,11 @@ def process_images_in_folder(folder_path, threshold_levels, output_path):
     # Validate functions first
     validate_functions()
 
+    # Create images folder
+    images_folder = os.path.join(output_path, "imagesPerThresholdLevel_SAABC")
+    if not os.path.exists(images_folder):
+        os.makedirs(images_folder)
+
     results = []
     for filename in os.listdir(folder_path):
         if filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif")):
@@ -363,6 +368,11 @@ def process_images_in_folder(folder_path, threshold_levels, output_path):
             image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
             if image is None:
                 continue
+
+            # Calculate histogram once for the image
+            hist, _ = np.histogram(image.flatten(), bins=256, range=(0, 256))
+            total_pixels = np.sum(hist)
+            prob = hist.astype(float) / total_pixels
 
             for method, obj_func in [("kapur", kapur_entropy), ("otsu", otsu_variance)]:
                 for m in threshold_levels:
@@ -388,6 +398,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_path):
                               limit=optimized_params['limit'])
 
                     best_sol, best_fit = abc.evolve()
+                    execution_time_ms = (time.time() - start_time) * 1000
 
                     # Create segmented image and calculate metrics
                     segmented = apply_thresholds(image, best_sol)
@@ -395,6 +406,10 @@ def process_images_in_folder(folder_path, threshold_levels, output_path):
                     psnr_value = calculate_psnr(mse_value)
                     ssim_value = ssim(image, segmented, data_range=255)
                     uniformity = calculate_uniformity_measure(segmented)
+
+                    # Calculate both fitness values
+                    kapur_value = kapur_entropy(image, best_sol)
+                    otsu_value = otsu_variance(image, best_sol)
 
                     threshold_str = f"[{', '.join(map(str, best_sol))}]"
 
@@ -404,21 +419,41 @@ def process_images_in_folder(folder_path, threshold_levels, output_path):
                         "thresholding_level": m,
                         "threshold_value": threshold_str,
                         "fitness_value": best_fit,
+                        "Kapur_Value": kapur_value,
+                        "Otsu_Value": otsu_value,
                         "SSIM": ssim_value,
                         "MSE": mse_value,
                         "PSNR": psnr_value,
                         "Uniformity Measure": uniformity,
                         "Seed": run_seed,
+                        "Execution Time (ms)": execution_time_ms,
                         "ABC_pop_size": optimized_params['pop_size'],
                         "ABC_max_iter": optimized_params['max_iter'],
                         "ABC_limit": optimized_params['limit']
                     })
 
-                    print(f"Completed: Fitness: {best_fit:.6f}, Thresholds: {best_sol}")
+                    print(
+                        f"Completed: Fitness: {best_fit:.6f}, Thresholds: {best_sol}, Time: {execution_time_ms:.2f}ms")
+
+                    # Save the thresholded image
+                    image_name_base = os.path.splitext(filename)[0]
+                    output_filename = f"{image_name_base}_{method}_{m}_thresholds.png"
+                    output_image_path = os.path.join(images_folder, output_filename)
+                    cv2.imwrite(output_image_path, segmented)
 
     # Save results
     df = pd.DataFrame(results)
     excel_file_path = os.path.join(output_path, "SA-ABC_Results.xlsx")
+
+    # Format the numeric columns for better Excel display
+    df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:,.8f}")
+    df['Kapur_Value'] = df['Kapur_Value'].apply(lambda x: f"{x:,.8f}")
+    df['Otsu_Value'] = df['Otsu_Value'].apply(lambda x: f"{x:,.8f}")
+    df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:,.7f}")
+    df['MSE'] = df['MSE'].apply(lambda x: f"{x:,.7f}")
+    df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:,.7f}")
+    df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:,.7f}")
+    df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:,.2f}")
 
     with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
         df.to_excel(writer, sheet_name='Results', index=False)
