@@ -206,6 +206,11 @@ def create_thresholded_image(image, thresholds):
 def process_images_in_folder(folder_path, threshold_levels, param_settings, output_path):
     results = []
 
+    # Create images folder
+    images_folder = os.path.join(output_path, "imagesPerThresholdLevel_ILSGA")
+    if not os.path.exists(images_folder):
+        os.makedirs(images_folder)
+
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
@@ -231,7 +236,8 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
                         random.seed(run_seed)
                         np.random.seed(run_seed)
 
-                        print(f"--- Starting Experiment for {filename} {fitness_function_name} {num_thresholds} with Seed: {run_seed} ---")
+                        print(
+                            f"--- Starting Experiment for {filename} {fitness_function_name} {num_thresholds} with Seed: {run_seed} ---")
 
                         params = param_settings[num_thresholds]
                         ga_ils = GeneticAlgorithmILS(
@@ -242,6 +248,8 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
                         )
 
                         best_solution, best_fitness = ga_ils.evolve()
+                        execution_time_ms = (time.time() - start_time) * 1000
+
                         thresholded_image = apply_thresholds(image, best_solution)
 
                         image_normalized = image / 255.0
@@ -262,10 +270,18 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
                             'MSE': mse_value,
                             'PSNR': psnr_value,
                             'Uniformity Measure': uniformity_value,
-                            'Seed': run_seed
+                            'Seed': run_seed,
+                            'Execution Time (ms)': execution_time_ms
                         })
 
-                        print(f"    Completed: Thresholds {best_solution}, Fitness {best_fitness:.4f}")
+                        print(
+                            f"    Completed: Thresholds {best_solution}, Fitness {best_fitness:.4f}, Time {execution_time_ms:.2f}ms")
+
+                        # Save the thresholded image
+                        image_name_base = os.path.splitext(filename)[0]
+                        output_filename = f"{image_name_base}_{fitness_function_name}_{num_thresholds}_thresholds.png"
+                        output_image_path = os.path.join(images_folder, output_filename)
+                        cv2.imwrite(output_image_path, thresholded_image)
 
             except Exception as e:
                 print(f"Error processing {filename}: {str(e)}")
@@ -274,6 +290,15 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
     if results:
         df = pd.DataFrame(results)
         output_file = os.path.join(output_path, "ILSGA_results.xlsx")
+
+        # Format the numeric columns for better Excel display
+        df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:,.8f}")
+        df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:,.7f}")
+        df['MSE'] = df['MSE'].apply(lambda x: f"{x:,.7f}")
+        df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:,.7f}")
+        df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:,.7f}")
+        df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:,.2f}")
+
         df.to_excel(output_file, index=False)
         print(f"Results saved to {output_file}")
         return df
