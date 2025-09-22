@@ -331,6 +331,11 @@ class MetaGeneticAlgorithm:
 def process_images_in_folder(folder_path, threshold_levels, output_path, runs_per_threshold=1):
     results = []
 
+    # Create images folder
+    images_folder = os.path.join(output_path, "imagesPerThresholdLevel_GAGA")
+    if not os.path.exists(images_folder):
+        os.makedirs(images_folder)
+
     image_files = [f for f in os.listdir(folder_path)
                    if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))]
 
@@ -349,12 +354,18 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
             print(f"Could not load image {filename}")
             continue
 
+        # Calculate histogram once for the image
+        hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+
         for fitness_function in ['kapur', 'otsu']:
             for num_thresholds in threshold_levels:
                 for run in range(runs_per_threshold):
                     processed += 1
                     print(
                         f"\n[{processed}/{total_ops}] {filename} {num_thresholds} thresholds {fitness_function} run {run + 1}")
+
+                    # Start timing
+                    start_time = time.time()
 
                     meta_ga = MetaGeneticAlgorithm(image=image,
                                                    num_thresholds=num_thresholds,
@@ -376,12 +387,18 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
                     )
 
                     best_solution, best_fitness = ga.evolve()
+                    execution_time_ms = (time.time() - start_time) * 1000
+
                     thresholded_image = apply_thresholds(image, best_solution)
 
                     mse_value = calculate_mse(image, thresholded_image)
                     psnr_value = calculate_psnr(mse_value)
                     ssim_value = ssim(image, thresholded_image)
                     uniformity_value = calculate_uniformity(thresholded_image)
+
+                    # Calculate both fitness values
+                    kapur_value = calculate_entropy(hist, best_solution)
+                    otsu_value = calculate_otsu(hist, best_solution)
 
                     threshold_str = f"[{', '.join(map(str, sorted(best_solution)))}]"
 
@@ -391,15 +408,25 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
                         'thresholding_level': num_thresholds,
                         'threshold_value': threshold_str,
                         'fitness_value': format_number(best_fitness, 7),
+                        'Kapur_Value': format_number(kapur_value, 7),
+                        'Otsu_Value': format_number(otsu_value, 7),
                         'SSIM': format_number(ssim_value, 9),
                         'MSE': format_number(mse_value, 7),
                         'PSNR': format_number(psnr_value, 8),
                         'Uniformity Measure': format_number(uniformity_value, 9),
                         'Random Seed': global_seed,
+                        'Execution Time (ms)': format_number(execution_time_ms, 2),
                         'GA_Config': json.dumps(best_config)
                     })
 
-                    print(f"  Completed. Fitness {best_fitness:.6f}, SSIM {ssim_value:.6f}")
+                    print(
+                        f"  Completed. Fitness {best_fitness:.6f}, SSIM {ssim_value:.6f}, Time {execution_time_ms:.2f}ms")
+
+                    # Save the thresholded image
+                    image_name_base = os.path.splitext(filename)[0]
+                    output_filename = f"{image_name_base}_{fitness_function}_{num_thresholds}_thresholds.png"
+                    output_image_path = os.path.join(images_folder, output_filename)
+                    cv2.imwrite(output_image_path, thresholded_image)
 
     df = pd.DataFrame(results)
     os.makedirs(output_path, exist_ok=True)
