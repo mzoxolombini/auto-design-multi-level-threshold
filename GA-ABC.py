@@ -6,6 +6,8 @@ import pandas as pd
 from scipy.ndimage import correlate
 from joblib import Parallel, delayed
 import sys
+import time
+
 
 # ----------------- Utility Functions -----------------
 
@@ -87,6 +89,7 @@ def apply_thresholds(image, thresholds):
         segmented = (segmented * (255 // (len(thresholds) + 1))).astype(np.uint8)
     return segmented
 
+
 # ----------------- Pure ABC -----------------
 
 class PureArtificialBeeColony:
@@ -146,6 +149,7 @@ class PureArtificialBeeColony:
         cand[d] = int(np.clip(sol[d] + phi * (sol[d] - self.population[k][d]), 1, 254))
         return sorted(cand)
 
+
 # ----------------- GA to configure ABC -----------------
 
 class GAforABC:
@@ -156,9 +160,9 @@ class GAforABC:
         self.num_thresholds = num_thresholds
 
         self.population = [
-            [random.randint(20, 80),            # pop_size
-             random.uniform(0.1, 1.0),          # mutation_factor
-             random.uniform(0.1, 0.5)]          # limit_ratio
+            [random.randint(20, 80),  # pop_size
+             random.uniform(0.1, 1.0),  # mutation_factor
+             random.uniform(0.1, 0.5)]  # limit_ratio
             for _ in range(ga_config['pop_size'])
         ]
 
@@ -185,7 +189,7 @@ class GAforABC:
                 best_chromosome, best_score = ranked[0]
 
             # selection (top 50%)
-            parents = self.population[:len(self.population)//2]
+            parents = self.population[:len(self.population) // 2]
             new_pop = parents.copy()
 
             # crossover + mutation
@@ -202,9 +206,10 @@ class GAforABC:
 
         return best_chromosome, best_score
 
+
 # ----------------- Worker -----------------
 
-def process_single(filename, folder_path, num_thresholds, fitness_function, abc_config, random_seed):
+def process_single(filename, folder_path, num_thresholds, fitness_function, abc_config, random_seed, images_folder):
     filepath = os.path.join(folder_path, filename)
     print(f"[START] {filename} | {fitness_function} | thresholds={num_thresholds}", flush=True, file=sys.stderr)
 
@@ -213,17 +218,35 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
         print(f"[SKIP] Could not load {filename}", flush=True, file=sys.stderr)
         return None
 
+    # Start timing
+    start_time = time.time()
+
     hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
     fitness_func = calculate_entropy if fitness_function == "kapur" else calculate_otsu
 
     abc = PureArtificialBeeColony(abc_config, num_thresholds, hist, fitness_func)
     best_solution, best_fitness = abc.evolve()
 
+    # Calculate execution time
+    execution_time_ms = (time.time() - start_time) * 1000
+
     seg_img = apply_thresholds(image, best_solution)
     mse = calculate_mse(image, seg_img)
     psnr = calculate_psnr(mse)
 
-    print(f"[DONE] {filename} | {fitness_function} | thresholds={num_thresholds} | fitness={best_fitness:.4f}", flush=True, file=sys.stderr)
+    # Calculate both fitness values
+    kapur_value = calculate_entropy(hist, best_solution)
+    otsu_value = calculate_otsu(hist, best_solution)
+
+    print(
+        f"[DONE] {filename} | {fitness_function} | thresholds={num_thresholds} | fitness={best_fitness:.4f} | time={execution_time_ms:.2f}ms",
+        flush=True, file=sys.stderr)
+
+    # Save the thresholded image
+    image_name_base = os.path.splitext(filename)[0]
+    output_filename = f"{image_name_base}_{fitness_function}_{num_thresholds}_thresholds.png"
+    output_image_path = os.path.join(images_folder, output_filename)
+    cv2.imwrite(output_image_path, seg_img)
 
     return {
         'image_name': filename,
@@ -231,18 +254,27 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
         'thresholding_level': num_thresholds,
         'threshold_value': sorted(best_solution),
         'fitness_value': best_fitness,
+        'Kapur_Value': kapur_value,
+        'Otsu_Value': otsu_value,
         'SSIM': ssim(image, seg_img),
         'MSE': mse,
         'PSNR': psnr,
         'Uniformity Measure': calculate_uniformity(seg_img),
-        'Random Seed': random_seed
+        'Random Seed': random_seed,
+        'Execution Time (ms)': execution_time_ms
     }
+
 
 # ----------------- Main Runner -----------------
 
 def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=-1):
+    # Create images folder
+    images_folder = os.path.join(output_path, "imagesPerThresholdLevel_GAABC")
+    if not os.path.exists(images_folder):
+        os.makedirs(images_folder)
+
     # Random seed
-    random_seed = random.randint(1, 2**32 - 1)
+    random_seed = random.randint(1, 2 ** 32 - 1)
     random.seed(random_seed)
     np.random.seed(random_seed)
 
@@ -263,7 +295,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
     }
     print("Best ABC parameters from GA:", abc_config)
 
-    tasks = [(f, folder_path, t, func, abc_config, random_seed)
+    tasks = [(f, folder_path, t, func, abc_config, random_seed, images_folder)
              for f in files for func in ["kapur", "otsu"] for t in threshold_levels]
     results = Parallel(n_jobs=n_jobs, verbose=10)(
         delayed(process_single)(*task) for task in tasks
@@ -272,14 +304,27 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
 
     df = pd.DataFrame(results)[[
         'image_name', 'fitness_function', 'thresholding_level',
-        'threshold_value', 'fitness_value', 'SSIM', 'MSE', 'PSNR',
-        'Uniformity Measure', 'Random Seed'
+        'threshold_value', 'fitness_value', 'Kapur_Value', 'Otsu_Value',
+        'SSIM', 'MSE', 'PSNR', 'Uniformity Measure', 'Random Seed', 'Execution Time (ms)'
     ]]
 
     os.makedirs(output_path, exist_ok=True)
-    df.to_excel(os.path.join(output_path, "GAABC_results.xlsx"), index=False)
-    print("Results saved")
+    output_file = os.path.join(output_path, "GAABC_results.xlsx")
+
+    # Format the numeric columns for better Excel display
+    df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:,.8f}")
+    df['Kapur_Value'] = df['Kapur_Value'].apply(lambda x: f"{x:,.8f}")
+    df['Otsu_Value'] = df['Otsu_Value'].apply(lambda x: f"{x:,.8f}")
+    df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:,.7f}")
+    df['MSE'] = df['MSE'].apply(lambda x: f"{x:,.7f}")
+    df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:,.7f}")
+    df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:,.7f}")
+    df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:,.2f}")
+
+    df.to_excel(output_file, index=False)
+    print("Results saved to", output_file)
     return df
+
 
 if __name__ == "__main__":
     folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
