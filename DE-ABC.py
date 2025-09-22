@@ -268,22 +268,34 @@ class DEABCConfigurator:
 # Image Processing
 # ===============================
 
-def process_single(file_name, folder_path, num_thresholds, func_name, de_configurator, seed=None):
+def process_single(file_name, folder_path, num_thresholds, func_name, de_configurator, seed=None, images_folder=None):
     try:
+        # Start timing
+        start_time = time.time()
+
         image_path = os.path.join(folder_path, file_name)
         image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         if image is None:
             return None
 
+        # Calculate histogram once for the image
+        hist = calculate_histogram(image)
+
         fitness_function = kapur_entropy if func_name == "kapur" else otsu_between_class_variance
         optimal_cfg = de_configurator.optimize_abc_params(num_thresholds, image, fitness_function, seed)
 
-        hist = calculate_histogram(image)
         abc = PureArtificialBeeColony(optimal_cfg, num_thresholds, hist, fitness_function, seed)
         best_thresholds, best_score = abc.evolve()
 
+        # Calculate execution time
+        execution_time_ms = (time.time() - start_time) * 1000
+
         # Apply thresholds to create segmented image
         segmented_image = apply_thresholds(image, best_thresholds)
+
+        # Calculate both fitness values
+        kapur_value = kapur_entropy(hist, best_thresholds)
+        otsu_value = otsu_between_class_variance(hist, best_thresholds)
 
         # Calculate additional metrics
         ssim_value = calculate_ssim(image, segmented_image)
@@ -294,23 +306,39 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
         # Format threshold values as comma-separated values within square brackets
         threshold_value_str = "[" + ", ".join(map(str, best_thresholds)) + "]"
 
+        # Save the thresholded image
+        if images_folder:
+            image_name_base = os.path.splitext(file_name)[0]
+            output_filename = f"{image_name_base}_{func_name}_{num_thresholds}_thresholds.png"
+            output_image_path = os.path.join(images_folder, output_filename)
+            cv2.imwrite(output_image_path, segmented_image)
+
         return {
             "image_name": file_name,
             "fitness_function": func_name,
             "thresholding_level": num_thresholds,
             "threshold_value": threshold_value_str,
             "fitness_value": best_score,
+            "Kapur_Value": kapur_value,
+            "Otsu_Value": otsu_value,
             "SSIM": ssim_value,
             "MSE": mse_value,
             "PSNR": psnr_value,
             "Uniformity Measure": uniformity,
-            "Random Seed": seed
+            "Random Seed": seed,
+            "Execution Time (ms)": execution_time_ms
         }
     except Exception as e:
         return {"image_name": file_name, "fitness_function": func_name, "error": str(e)}
 
 
 def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=-1, seed=None):
+    # Create images folder
+    output_path = os.path.dirname(output_file)
+    images_folder = os.path.join(output_path, "imagesPerThresholdLevel_DEABC")
+    if not os.path.exists(images_folder):
+        os.makedirs(images_folder)
+
     files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
     # Generate a random seed if not provided
@@ -322,7 +350,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
     de_configurator = DEABCConfigurator(seed=seed)
 
-    tasks = [(f, folder_path, t, func, de_configurator, seed)
+    tasks = [(f, folder_path, t, func, de_configurator, seed, images_folder)
              for f in files for func in ["kapur", "otsu"] for t in threshold_levels]
 
     results = Parallel(n_jobs=n_jobs, verbose=10)(
@@ -330,8 +358,36 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
     )
 
     results = [r for r in results if r is not None]
-    df = pd.DataFrame(results)
-    df.to_excel(output_file, index=False)
+
+    # Filter out error results
+    valid_results = [r for r in results if 'error' not in r]
+
+    if valid_results:
+        df = pd.DataFrame(valid_results)
+
+        # Format the numeric columns for better Excel display
+        df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:,.8f}")
+        df['Kapur_Value'] = df['Kapur_Value'].apply(lambda x: f"{x:,.8f}")
+        df['Otsu_Value'] = df['Otsu_Value'].apply(lambda x: f"{x:,.8f}")
+        df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:,.7f}")
+        df['MSE'] = df['MSE'].apply(lambda x: f"{x:,.7f}")
+        df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:,.7f}")
+        df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:,.7f}")
+        df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:,.2f}")
+
+        df.to_excel(output_file, index=False)
+        print(f"Results saved to {output_file}")
+
+        # Print error results if any
+        error_results = [r for r in results if 'error' in r]
+        if error_results:
+            print(f"Errors encountered in {len(error_results)} processing tasks:")
+            for error_result in error_results:
+                print(f"  {error_result['image_name']} - {error_result['fitness_function']}: {error_result['error']}")
+    else:
+        print("No valid results to save")
+        df = pd.DataFrame()
+
     return df
 
 
@@ -342,11 +398,13 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 if __name__ == "__main__":
     folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
     levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
-    output = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results\DEABC_results.xlsx"
+    output_dir = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, "DEABC_results.xlsx")
 
     # Generate a random seed for this run
     random_seed = random.randint(0, 2 ** 32 - 1)
     print(f"Using random seed: {random_seed}")
 
-    df = process_images_in_folder(folder, levels, output, n_jobs=-1, seed=random_seed)
+    df = process_images_in_folder(folder, levels, output_file, n_jobs=-1, seed=random_seed)
     print(df)
