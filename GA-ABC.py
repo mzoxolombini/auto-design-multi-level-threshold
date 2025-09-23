@@ -7,6 +7,7 @@ from scipy.ndimage import correlate
 from joblib import Parallel, delayed
 import sys
 import time
+import math
 
 
 # ----------------- Utility Functions -----------------
@@ -23,7 +24,7 @@ def ssim(image1, image2, C1=0.01 ** 2, C2=0.03 ** 2):
     sigma12 = correlate(image1 * image2, kernel, mode='reflect') - mu1_mu2
     numerator = (2 * mu1_mu2 + C1) * (2 * sigma12 + C2)
     denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
-    return np.mean(numerator / (denominator + 1e-10))
+    return float(np.mean(numerator / (denominator + 1e-10)))
 
 
 def calculate_entropy(hist, thresholds):
@@ -40,7 +41,7 @@ def calculate_entropy(hist, thresholds):
         else:
             entropies.append(0)
         prev_threshold = threshold
-    return np.sum(entropies)
+    return float(np.sum(entropies))
 
 
 def calculate_otsu(hist, thresholds):
@@ -56,23 +57,23 @@ def calculate_otsu(hist, thresholds):
             mu_i = np.sum(np.arange(thresholds[i - 1], thresholds[i]) *
                           probs[thresholds[i - 1]:thresholds[i]]) / w_i
             between_class_variance += w_i * (mu_i - global_mean) ** 2
-    return between_class_variance
+    return float(between_class_variance)
 
 
 def calculate_mse(img1, img2):
-    return np.mean((img1.astype(np.float64) - img2.astype(np.float64)) ** 2)
+    return float(np.mean((img1.astype(np.float64) - img2.astype(np.float64)) ** 2))
 
 
 def calculate_psnr(mse_value, max_pixel=255.0):
     if mse_value == 0:
         return float('inf')
-    return 20 * np.log10(max_pixel / np.sqrt(mse_value))
+    return float(20 * math.log10(max_pixel / math.sqrt(mse_value)))
 
 
 def calculate_uniformity(image):
     hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
     hist_normalized = hist / hist.sum()
-    return np.sum(hist_normalized ** 2)
+    return float(np.sum(hist_normalized ** 2))
 
 
 def apply_thresholds(image, thresholds):
@@ -90,15 +91,24 @@ def apply_thresholds(image, thresholds):
     return segmented
 
 
+def format_number(value, decimals=8):
+    if isinstance(value, (int, np.integer)):
+        return str(value)
+    fmt = f"{value:.{decimals}f}"
+    return fmt.replace('.', ',')
+
+
 # ----------------- Pure ABC -----------------
 
 class PureArtificialBeeColony:
-    def __init__(self, config, num_thresholds, hist, fitness_function):
+    def __init__(self, config, num_thresholds, hist, fitness_function, seed=None):
         self.config = config
         self.num_thresholds = num_thresholds
         self.hist = hist
         self.fitness_function = fitness_function
-        self.population = [sorted(random.sample(range(1, 255), num_thresholds))
+        self.rng = random.Random(seed)
+        self.np_rng = np.random.RandomState(seed)
+        self.population = [sorted(self.rng.sample(range(1, 255), num_thresholds))
                            for _ in range(config['pop_size'])]
         self.trials = [0] * config['pop_size']
         self.limit = int(config['pop_size'] * config['limit_ratio'])
@@ -128,7 +138,8 @@ class PureArtificialBeeColony:
         fits = np.array([self.fitness(ind) for ind in self.population])
         probs = fits / fits.sum() if fits.sum() > 0 else np.ones(len(fits)) / len(fits)
         for _ in range(len(self.population)):
-            idx = np.random.choice(len(self.population), p=probs)
+            # Use numpy for weighted random choice
+            idx = self.np_rng.choice(len(self.population), p=probs)
             cand = self.candidate(self.population[idx], idx)
             if self.fitness(cand) > self.fitness(self.population[idx]):
                 self.population[idx], self.trials[idx] = cand, 0
@@ -138,14 +149,14 @@ class PureArtificialBeeColony:
     def scout(self):
         for i in range(len(self.population)):
             if self.trials[i] >= self.limit:
-                self.population[i] = sorted(random.sample(range(1, 255), self.num_thresholds))
+                self.population[i] = sorted(self.rng.sample(range(1, 255), self.num_thresholds))
                 self.trials[i] = 0
 
     def candidate(self, sol, idx):
         cand = sol.copy()
-        d = random.randint(0, len(cand) - 1)
-        k = random.choice([j for j in range(len(self.population)) if j != idx])
-        phi = random.uniform(-1, 1) * self.config['mutation_factor']
+        d = self.rng.randint(0, len(cand) - 1)
+        k = self.rng.choice([j for j in range(len(self.population)) if j != idx])
+        phi = self.rng.uniform(-1, 1) * self.config['mutation_factor']
         cand[d] = int(np.clip(sol[d] + phi * (sol[d] - self.population[k][d]), 1, 254))
         return sorted(cand)
 
@@ -153,16 +164,18 @@ class PureArtificialBeeColony:
 # ----------------- GA to configure ABC -----------------
 
 class GAforABC:
-    def __init__(self, ga_config, hist, fitness_function, num_thresholds):
+    def __init__(self, ga_config, hist, fitness_function, num_thresholds, seed=None):
         self.ga_config = ga_config
         self.hist = hist
         self.fitness_function = fitness_function
         self.num_thresholds = num_thresholds
+        self.rng = random.Random(seed)
+        self.np_rng = np.random.RandomState(seed)
 
         self.population = [
-            [random.randint(20, 80),  # pop_size
-             random.uniform(0.1, 1.0),  # mutation_factor
-             random.uniform(0.1, 0.5)]  # limit_ratio
+            [self.rng.randint(20, 80),  # pop_size
+             self.rng.uniform(0.1, 1.0),  # mutation_factor
+             self.rng.uniform(0.1, 0.5)]  # limit_ratio
             for _ in range(ga_config['pop_size'])
         ]
 
@@ -174,7 +187,8 @@ class GAforABC:
             'mutation_factor': mutation_factor,
             'limit_ratio': limit_ratio
         }
-        abc = PureArtificialBeeColony(abc_config, self.num_thresholds, self.hist, self.fitness_function)
+        abc = PureArtificialBeeColony(abc_config, self.num_thresholds, self.hist, self.fitness_function,
+                                      self.rng.randint(0, 1000000))
         _, best_fitness = abc.evolve()
         return best_fitness
 
@@ -194,11 +208,11 @@ class GAforABC:
 
             # crossover + mutation
             while len(new_pop) < self.ga_config['pop_size']:
-                p1, p2 = random.sample(parents, 2)
+                p1, p2 = self.rng.sample(parents, 2)
                 child = [
-                    int((p1[0] + p2[0]) / 2 + random.randint(-5, 5)),
-                    max(0.1, min(1.0, (p1[1] + p2[1]) / 2 + random.uniform(-0.1, 0.1))),
-                    max(0.1, min(0.5, (p1[2] + p2[2]) / 2 + random.uniform(-0.05, 0.05)))
+                    int((p1[0] + p2[0]) / 2 + self.rng.randint(-5, 5)),
+                    max(0.1, min(1.0, (p1[1] + p2[1]) / 2 + self.rng.uniform(-0.1, 0.1))),
+                    max(0.1, min(0.5, (p1[2] + p2[2]) / 2 + self.rng.uniform(-0.05, 0.05)))
                 ]
                 child[0] = max(10, min(100, child[0]))
                 new_pop.append(child)
@@ -218,13 +232,18 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
         print(f"[SKIP] Could not load {filename}", flush=True, file=sys.stderr)
         return None
 
+    # Generate unique seed for this specific run
+    run_seed = int(time.time() * 1000) % 1000000
+    random.seed(run_seed)
+    np.random.seed(run_seed)
+
     # Start timing
     start_time = time.time()
 
     hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
     fitness_func = calculate_entropy if fitness_function == "kapur" else calculate_otsu
 
-    abc = PureArtificialBeeColony(abc_config, num_thresholds, hist, fitness_func)
+    abc = PureArtificialBeeColony(abc_config, num_thresholds, hist, fitness_func, run_seed)
     best_solution, best_fitness = abc.evolve()
 
     # Calculate execution time
@@ -233,10 +252,10 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
     seg_img = apply_thresholds(image, best_solution)
     mse = calculate_mse(image, seg_img)
     psnr = calculate_psnr(mse)
+    ssim_value = ssim(image, seg_img)
+    uniformity_value = calculate_uniformity(seg_img)
 
-    # Calculate both fitness values
-    kapur_value = calculate_entropy(hist, best_solution)
-    otsu_value = calculate_otsu(hist, best_solution)
+    threshold_str = f"[{', '.join(map(str, sorted(best_solution)))}]"
 
     print(
         f"[DONE] {filename} | {fitness_function} | thresholds={num_thresholds} | fitness={best_fitness:.4f} | time={execution_time_ms:.2f}ms",
@@ -250,18 +269,16 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
 
     return {
         'image_name': filename,
-        'fitness_function': fitness_function,
+        'fitness_function': fitness_function.capitalize(),  # Capitalize first letter
         'thresholding_level': num_thresholds,
-        'threshold_value': sorted(best_solution),
-        'fitness_value': best_fitness,
-        'Kapur_Value': kapur_value,
-        'Otsu_Value': otsu_value,
-        'SSIM': ssim(image, seg_img),
-        'MSE': mse,
-        'PSNR': psnr,
-        'Uniformity Measure': calculate_uniformity(seg_img),
-        'Random Seed': random_seed,
-        'Execution Time (ms)': execution_time_ms
+        'threshold_value': threshold_str,
+        'fitness_value': format_number(best_fitness, 8),  # 8 decimal places
+        'SSIM': format_number(ssim_value, 7),  # 7 decimal places
+        'MSE': format_number(mse, 7),  # 7 decimal places
+        'PSNR': format_number(psnr, 7),  # 7 decimal places
+        'Uniformity Measure': format_number(uniformity_value, 7),  # 7 decimal places
+        'Random Seed': run_seed,  # Use the unique run seed
+        'Execution Time (ms)': format_number(execution_time_ms, 2)  # 2 decimal places
     }
 
 
@@ -273,19 +290,20 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
     if not os.path.exists(images_folder):
         os.makedirs(images_folder)
 
-    # Random seed
-    random_seed = random.randint(1, 2 ** 32 - 1)
-    random.seed(random_seed)
-    np.random.seed(random_seed)
-
-    # Use first image to tune ABC via GA
     files = [f for f in os.listdir(folder_path)
              if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))]
+
+    # Generate unique seed for GA configuration
+    ga_seed = int(time.time() * 1000) % 1000000
+    random.seed(ga_seed)
+    np.random.seed(ga_seed)
+
+    # Use first image to tune ABC via GA
     sample_img = cv2.imread(os.path.join(folder_path, files[0]), cv2.IMREAD_GRAYSCALE)
     hist = cv2.calcHist([sample_img], [0], None, [256], [0, 256]).flatten()
 
     ga_config = {'pop_size': 6, 'max_generations': 5}  # keep light
-    ga = GAforABC(ga_config, hist, calculate_entropy, num_thresholds=3)
+    ga = GAforABC(ga_config, hist, calculate_entropy, num_thresholds=3, seed=ga_seed)
     best_params, _ = ga.evolve()
     abc_config = {
         'pop_size': int(best_params[0]),
@@ -295,31 +313,35 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
     }
     print("Best ABC parameters from GA:", abc_config)
 
-    tasks = [(f, folder_path, t, func, abc_config, random_seed, images_folder)
+    tasks = [(f, folder_path, t, func, abc_config, ga_seed, images_folder)
              for f in files for func in ["kapur", "otsu"] for t in threshold_levels]
     results = Parallel(n_jobs=n_jobs, verbose=10)(
         delayed(process_single)(*task) for task in tasks
     )
     results = [r for r in results if r is not None]
 
-    df = pd.DataFrame(results)[[
-        'image_name', 'fitness_function', 'thresholding_level',
-        'threshold_value', 'fitness_value', 'Kapur_Value', 'Otsu_Value',
-        'SSIM', 'MSE', 'PSNR', 'Uniformity Measure', 'Random Seed', 'Execution Time (ms)'
-    ]]
+    # Create DataFrame with the exact column order
+    df = pd.DataFrame(results)
+
+    # Reorder columns to match the desired format exactly
+    column_order = [
+        'image_name',
+        'fitness_function',
+        'thresholding_level',
+        'threshold_value',
+        'fitness_value',
+        'SSIM',
+        'MSE',
+        'PSNR',
+        'Uniformity Measure',
+        'Random Seed',
+        'Execution Time (ms)'
+    ]
+
+    df = df[column_order]
 
     os.makedirs(output_path, exist_ok=True)
     output_file = os.path.join(output_path, "GAABC_results.xlsx")
-
-    # Format the numeric columns for better Excel display
-    df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:,.8f}")
-    df['Kapur_Value'] = df['Kapur_Value'].apply(lambda x: f"{x:,.8f}")
-    df['Otsu_Value'] = df['Otsu_Value'].apply(lambda x: f"{x:,.8f}")
-    df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:,.7f}")
-    df['MSE'] = df['MSE'].apply(lambda x: f"{x:,.7f}")
-    df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:,.7f}")
-    df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:,.7f}")
-    df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:,.2f}")
 
     df.to_excel(output_file, index=False)
     print("Results saved to", output_file)
