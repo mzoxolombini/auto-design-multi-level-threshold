@@ -15,12 +15,6 @@ try:
 except Exception:
     pass
 
-# Single global seed
-global_seed = random.randint(0, 1_000_000)
-print(f"Using global seed for all runs: {global_seed}")
-random.seed(global_seed)
-np.random.seed(global_seed)
-
 
 # SSIM implementation
 def ssim(image1, image2, C1=0.01 ** 2, C2=0.03 ** 2):
@@ -238,7 +232,7 @@ class MetaGeneticAlgorithm:
     def __init__(self, image, num_thresholds, fitness_function='kapur', seed=None):
         self.pop_size = 8
         self.max_generations = 4
-        self.seed = seed if seed is not None else global_seed
+        self.seed = seed
         self.rng = random.Random(self.seed)
         self.image = image
         self.num_thresholds = num_thresholds
@@ -364,13 +358,18 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
                     print(
                         f"\n[{processed}/{total_ops}] {filename} {num_thresholds} thresholds {fitness_function} run {run + 1}")
 
+                    # Generate unique seed for this specific run
+                    run_seed = int(time.time() * 1000) % 1000000  # More unique seed
+                    random.seed(run_seed)
+                    np.random.seed(run_seed)
+
                     # Start timing
                     start_time = time.time()
 
                     meta_ga = MetaGeneticAlgorithm(image=image,
                                                    num_thresholds=num_thresholds,
                                                    fitness_function=fitness_function,
-                                                   seed=global_seed)
+                                                   seed=run_seed)
                     best_config = meta_ga.evolve()
                     print(f"  Best GA config: {best_config}")
 
@@ -383,7 +382,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
                         crossover_rate=float(best_config['crossover_rate']),
                         mutation_rate=float(best_config['mutation_rate']),
                         tournament_size=3,
-                        seed=global_seed
+                        seed=run_seed
                     )
 
                     best_solution, best_fitness = ga.evolve()
@@ -396,31 +395,25 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
                     ssim_value = ssim(image, thresholded_image)
                     uniformity_value = calculate_uniformity(thresholded_image)
 
-                    # Calculate both fitness values
-                    kapur_value = calculate_entropy(hist, best_solution)
-                    otsu_value = calculate_otsu(hist, best_solution)
-
                     threshold_str = f"[{', '.join(map(str, sorted(best_solution)))}]"
 
+                    # Format the results exactly as requested
                     results.append({
                         'image_name': filename,
-                        'fitness_function': fitness_function,
+                        'fitness_function': fitness_function.capitalize(),  # Capitalize first letter
                         'thresholding_level': num_thresholds,
                         'threshold_value': threshold_str,
-                        'fitness_value': format_number(best_fitness, 7),
-                        'Kapur_Value': format_number(kapur_value, 7),
-                        'Otsu_Value': format_number(otsu_value, 7),
-                        'SSIM': format_number(ssim_value, 9),
-                        'MSE': format_number(mse_value, 7),
-                        'PSNR': format_number(psnr_value, 8),
-                        'Uniformity Measure': format_number(uniformity_value, 9),
-                        'Random Seed': global_seed,
-                        'Execution Time (ms)': format_number(execution_time_ms, 2),
-                        'GA_Config': json.dumps(best_config)
+                        'fitness_value': format_number(best_fitness, 8),  # 8 decimal places
+                        'SSIM': format_number(ssim_value, 7),  # 7 decimal places
+                        'MSE': format_number(mse_value, 7),  # 7 decimal places
+                        'PSNR': format_number(psnr_value, 7),  # 7 decimal places
+                        'Uniformity Measure': format_number(uniformity_value, 7),  # 7 decimal places
+                        'Random Seed': run_seed,
+                        'Execution Time (ms)': format_number(execution_time_ms, 2)  # 2 decimal places with comma
                     })
 
                     print(
-                        f"  Completed. Fitness {best_fitness:.6f}, SSIM {ssim_value:.6f}, Time {execution_time_ms:.2f}ms")
+                        f"  Completed. Fitness {best_fitness:.6f}, SSIM {ssim_value:.6f}, Time {execution_time_ms:.2f}ms, Seed {run_seed}")
 
                     # Save the thresholded image
                     image_name_base = os.path.splitext(filename)[0]
@@ -428,7 +421,26 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
                     output_image_path = os.path.join(images_folder, output_filename)
                     cv2.imwrite(output_image_path, thresholded_image)
 
+    # Create DataFrame with the exact column order
     df = pd.DataFrame(results)
+
+    # Reorder columns to match the desired format exactly
+    column_order = [
+        'image_name',
+        'fitness_function',
+        'thresholding_level',
+        'threshold_value',
+        'fitness_value',
+        'SSIM',
+        'MSE',
+        'PSNR',
+        'Uniformity Measure',
+        'Random Seed',
+        'Execution Time (ms)'
+    ]
+
+    df = df[column_order]
+
     os.makedirs(output_path, exist_ok=True)
     output_file = os.path.join(output_path, 'GAGA_Results.xlsx')
     try:
@@ -467,6 +479,6 @@ if __name__ == '__main__':
 
     for fitness_func in ['kapur', 'otsu']:
         for threshold in threshold_levels:
-            count = len(results_df[(results_df['fitness_function'] == fitness_func) &
+            count = len(results_df[(results_df['fitness_function'] == fitness_func.capitalize()) &
                                    (results_df['thresholding_level'] == threshold)])
             print(f"{fitness_func.capitalize()} with {threshold} thresholds: {count} runs")
