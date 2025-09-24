@@ -139,6 +139,13 @@ def apply_thresholds(image, thresholds):
     return segmented
 
 
+def format_number(value, decimals=8):
+    if isinstance(value, (int, np.integer)):
+        return str(value)
+    fmt = f"{value:.{decimals}f}"
+    return fmt.replace('.', ',')
+
+
 # ===============================
 # Artificial Bee Colony
 # ===============================
@@ -270,6 +277,11 @@ class DEABCConfigurator:
 
 def process_single(file_name, folder_path, num_thresholds, func_name, de_configurator, seed=None, images_folder=None):
     try:
+        # Generate unique seed for this specific run
+        run_seed = int(time.time() * 1000) % 1000000
+        np.random.seed(run_seed)
+        random.seed(run_seed)
+
         # Start timing
         start_time = time.time()
 
@@ -282,9 +294,9 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
         hist = calculate_histogram(image)
 
         fitness_function = kapur_entropy if func_name == "kapur" else otsu_between_class_variance
-        optimal_cfg = de_configurator.optimize_abc_params(num_thresholds, image, fitness_function, seed)
+        optimal_cfg = de_configurator.optimize_abc_params(num_thresholds, image, fitness_function, run_seed)
 
-        abc = PureArtificialBeeColony(optimal_cfg, num_thresholds, hist, fitness_function, seed)
+        abc = PureArtificialBeeColony(optimal_cfg, num_thresholds, hist, fitness_function, run_seed)
         best_thresholds, best_score = abc.evolve()
 
         # Calculate execution time
@@ -292,10 +304,6 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
 
         # Apply thresholds to create segmented image
         segmented_image = apply_thresholds(image, best_thresholds)
-
-        # Calculate both fitness values
-        kapur_value = kapur_entropy(hist, best_thresholds)
-        otsu_value = otsu_between_class_variance(hist, best_thresholds)
 
         # Calculate additional metrics
         ssim_value = calculate_ssim(image, segmented_image)
@@ -315,18 +323,16 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
 
         return {
             "image_name": file_name,
-            "fitness_function": func_name,
+            "fitness_function": func_name.capitalize(),  # Capitalize first letter
             "thresholding_level": num_thresholds,
             "threshold_value": threshold_value_str,
-            "fitness_value": best_score,
-            "Kapur_Value": kapur_value,
-            "Otsu_Value": otsu_value,
-            "SSIM": ssim_value,
-            "MSE": mse_value,
-            "PSNR": psnr_value,
-            "Uniformity Measure": uniformity,
-            "Random Seed": seed,
-            "Execution Time (ms)": execution_time_ms
+            "fitness_value": format_number(best_score, 8),  # 8 decimal places
+            "SSIM": format_number(ssim_value, 7),  # 7 decimal places
+            "MSE": format_number(mse_value, 7),  # 7 decimal places
+            "PSNR": format_number(psnr_value, 7),  # 7 decimal places
+            "Uniformity Measure": format_number(uniformity, 7),  # 7 decimal places
+            "Random Seed": run_seed,  # Use the unique run seed
+            "Execution Time (ms)": format_number(execution_time_ms, 2)  # 2 decimal places
         }
     except Exception as e:
         return {"image_name": file_name, "fitness_function": func_name, "error": str(e)}
@@ -341,9 +347,9 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
     files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
-    # Generate a random seed if not provided
+    # Generate a unique seed if not provided
     if seed is None:
-        seed = random.randint(0, 2 ** 32 - 1)
+        seed = int(time.time() * 1000) % 1000000
 
     np.random.seed(seed)
     random.seed(seed)
@@ -363,17 +369,25 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
     valid_results = [r for r in results if 'error' not in r]
 
     if valid_results:
+        # Create DataFrame with the exact column order
         df = pd.DataFrame(valid_results)
 
-        # Format the numeric columns for better Excel display
-        df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:,.8f}")
-        df['Kapur_Value'] = df['Kapur_Value'].apply(lambda x: f"{x:,.8f}")
-        df['Otsu_Value'] = df['Otsu_Value'].apply(lambda x: f"{x:,.8f}")
-        df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:,.7f}")
-        df['MSE'] = df['MSE'].apply(lambda x: f"{x:,.7f}")
-        df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:,.7f}")
-        df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:,.7f}")
-        df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:,.2f}")
+        # Reorder columns to match the desired format exactly
+        column_order = [
+            'image_name',
+            'fitness_function',
+            'thresholding_level',
+            'threshold_value',
+            'fitness_value',
+            'SSIM',
+            'MSE',
+            'PSNR',
+            'Uniformity Measure',
+            'Random Seed',
+            'Execution Time (ms)'
+        ]
+
+        df = df[column_order]
 
         df.to_excel(output_file, index=False)
         print(f"Results saved to {output_file}")
@@ -402,8 +416,8 @@ if __name__ == "__main__":
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, "DEABC_results.xlsx")
 
-    # Generate a random seed for this run
-    random_seed = random.randint(0, 2 ** 32 - 1)
+    # Generate a unique seed for this run
+    random_seed = int(time.time() * 1000) % 1000000
     print(f"Using random seed: {random_seed}")
 
     df = process_images_in_folder(folder, levels, output_file, n_jobs=-1, seed=random_seed)
