@@ -398,7 +398,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
 if __name__ == "__main__":
     folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    levels = [2, 3, 4]
+    levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
     output_dir = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, "DEGA_results.xlsx")
