@@ -31,7 +31,6 @@ def calculate_entropy(hist, thresholds):
             entropies.append(0)
         prev_threshold = threshold
 
-    # return sum of entropies (not normalized)
     return np.sum(entropies)
 
 
@@ -54,8 +53,55 @@ def calculate_otsu(hist, thresholds):
             class_mean = np.sum(class_probs * np.arange(thresholds[i - 1], thresholds[i])) / class_sum
             between_class_variance += class_sum * (class_mean - global_mean) ** 2
 
-    # return raw between-class variance (not normalized)
     return between_class_variance
+
+
+# Corrected Metrics Functions
+def calculate_mse(image1, image2):
+    """Calculate Mean Squared Error"""
+    # Convert to float64 to avoid integer overflow
+    image1_float = image1.astype(np.float64)
+    image2_float = image2.astype(np.float64)
+    return np.mean((image1_float - image2_float) ** 2)
+
+
+def calculate_psnr(mse_value, max_pixel=255.0):
+    """Calculate Peak Signal-to-Noise Ratio (corrected formula)"""
+    if mse_value == 0:
+        return float('inf')
+    return 10 * np.log10((max_pixel ** 2) / mse_value)
+
+
+def calculate_ssim_value(image1, image2):
+    """Calculate Structural Similarity Index with correct data range"""
+    return ssim(image1, image2, data_range=255)
+
+
+def calculate_uniformity(image):
+    """Calculate Histogram Uniformity Measure"""
+    hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+    hist_normalized = hist / hist.sum()
+    return np.sum(hist_normalized ** 2)
+
+
+def validate_metrics(ssim_val, mse_val, psnr_val, uniformity_val, filename=""):
+    """Validate that all metrics are within expected ranges"""
+    if not (-1 <= ssim_val <= 1):
+        print(f"Warning: SSIM value {ssim_val:.6f} out of range for {filename}")
+        ssim_val = max(-1.0, min(1.0, ssim_val))  # Clamp to valid range
+
+    if mse_val < 0:
+        print(f"Warning: MSE value {mse_val:.6f} negative for {filename}")
+        mse_val = max(0.0, mse_val)
+
+    if psnr_val < 0 and psnr_val != float('inf'):
+        print(f"Warning: PSNR value {psnr_val:.6f} invalid for {filename}")
+
+    if not (0 <= uniformity_val <= 1):
+        print(f"Warning: Uniformity value {uniformity_val:.6f} out of range for {filename}")
+        uniformity_val = max(0.0, min(1.0, uniformity_val))
+
+    return ssim_val, mse_val, psnr_val, uniformity_val
 
 
 # Genetic Algorithm for Multi-Thresholding
@@ -129,23 +175,6 @@ class GeneticAlgorithm:
         return self.population[0], self.fitness(self.population[0])
 
 
-# Metrics
-def calculate_mse(image1, image2):
-    return np.mean((image1 - image2) ** 2)
-
-
-def calculate_psnr(mse_value, max_pixel=255.0):
-    if mse_value == 0:
-        return float('inf')
-    return 20 * np.log10(max_pixel / np.sqrt(mse_value))
-
-
-def calculate_uniformity(image):
-    hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
-    hist_normalized = hist / hist.sum()
-    return np.sum(hist_normalized ** 2)
-
-
 # Apply thresholds using midpoints
 def apply_thresholds(image, thresholds):
     thresholds = sorted(thresholds)
@@ -162,7 +191,7 @@ def apply_thresholds(image, thresholds):
 
 # Initialize CSV file with headers
 def initialize_csv(output_path):
-    csv_file = os.path.join(output_path, "GA_experiment_results.csv")
+    csv_file = os.path.join(output_path, "GA_experiment_results_corrected.csv")
     header = ['Seed', 'Runtime', 'Image', 'Level', 'Method', 'Fitness', 'Thresholds', 'SSIM', 'MSE', 'PSNR',
               'Uniformity']
 
@@ -179,7 +208,7 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
     results = []
     csv_file = initialize_csv(output_path)
 
-    # create folder for thresholded images
+    # Create folder for thresholded images
     images_output_path = os.path.join(output_path, "imagesPerThresholdLevel")
     os.makedirs(images_output_path, exist_ok=True)
 
@@ -219,12 +248,19 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
                 # Runtime in milliseconds
                 runtime = int((time.time() - start_time) * 1000)
 
+                # Apply thresholds and calculate metrics
                 thresholded_image = apply_thresholds(image, best_solution)
 
+                # Calculate metrics with corrected functions
                 mse_value = calculate_mse(image, thresholded_image)
                 psnr_value = calculate_psnr(mse_value)
-                ssim_value = ssim(image, thresholded_image)
+                ssim_value = calculate_ssim_value(image, thresholded_image)
                 uniformity_value = calculate_uniformity(thresholded_image)
+
+                # Validate metrics
+                ssim_value, mse_value, psnr_value, uniformity_value = validate_metrics(
+                    ssim_value, mse_value, psnr_value, uniformity_value, filename
+                )
 
                 # Save thresholded image
                 image_save_name = f"{os.path.splitext(filename)[0]}_level{num_thresholds}_{fitness_function}.png"
@@ -264,11 +300,18 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
                       f"Runtime {runtime} ms")
 
     # Save to Excel
-    if results:  # Only save if there are results
+    if results:
         df = pd.DataFrame(results)
-        output_file = os.path.join(output_path, "GA_results.xlsx")
+        output_file = os.path.join(output_path, "GA_results_corrected.xlsx")
         df.to_excel(output_file, index=False)
         print(f"Results saved to {output_file}")
+
+        # Print summary of metric ranges for verification
+        print("\n=== Metric Ranges Summary ===")
+        print(f"SSIM range: [{df['SSIM'].min():.6f}, {df['SSIM'].max():.6f}]")
+        print(f"MSE range: [{df['MSE'].min():.2f}, {df['MSE'].max():.2f}]")
+        print(f"PSNR range: [{df['PSNR'].min():.2f}, {df['PSNR'].max():.2f}]")
+        print(f"Uniformity range: [{df['Uniformity'].min():.6f}, {df['Uniformity'].max():.6f}]")
     else:
         print("No results to save.")
 
@@ -307,4 +350,4 @@ if __name__ == "__main__":
 
     # Process images only once
     process_images_in_folder(folder_path, threshold_levels, param_settings, output_path)
-    print("Processing completed.")
+    print("Processing completed with corrected metrics.")
