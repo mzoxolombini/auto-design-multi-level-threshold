@@ -35,7 +35,6 @@ def calculate_entropy(hist, thresholds):
             entropies.append(0)
         prev_threshold = threshold
 
-    # return sum of entropies (not normalized)
     return np.sum(entropies)
 
 
@@ -58,13 +57,60 @@ def calculate_otsu(hist, thresholds):
             class_mean = np.sum(class_probs * np.arange(thresholds[i - 1], thresholds[i])) / class_sum
             between_class_variance += class_sum * (class_mean - global_mean) ** 2
 
-    # return raw between-class variance (not normalized)
     return between_class_variance
 
 
-# Utility metrics
+# Corrected Metrics Functions
+def calculate_mse(image1, image2):
+    """Calculate Mean Squared Error"""
+    # Convert to float64 to avoid integer overflow
+    image1_float = image1.astype(np.float64)
+    image2_float = image2.astype(np.float64)
+    return np.mean((image1_float - image2_float) ** 2)
 
+
+def calculate_psnr(mse_value, max_pixel=255.0):
+    """Calculate Peak Signal-to-Noise Ratio (corrected formula)"""
+    if mse_value == 0:
+        return float('inf')
+    return 10 * np.log10((max_pixel ** 2) / mse_value)
+
+
+def calculate_ssim_value(image1, image2):
+    """Calculate Structural Similarity Index with correct data range"""
+    return ssim(image1, image2, data_range=255)
+
+
+def calculate_uniformity(image):
+    """Calculate Histogram Uniformity Measure"""
+    hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+    hist_normalized = hist / hist.sum()
+    return np.sum(hist_normalized ** 2)
+
+
+def validate_metrics(ssim_val, mse_val, psnr_val, uniformity_val, filename=""):
+    """Validate that all metrics are within expected ranges"""
+    if not (-1 <= ssim_val <= 1):
+        print(f"Warning: SSIM value {ssim_val:.6f} out of range for {filename}")
+        ssim_val = max(-1.0, min(1.0, ssim_val))  # Clamp to valid range
+
+    if mse_val < 0:
+        print(f"Warning: MSE value {mse_val:.6f} negative for {filename}")
+        mse_val = max(0.0, mse_val)
+
+    if psnr_val < 0 and psnr_val != float('inf'):
+        print(f"Warning: PSNR value {psnr_val:.6f} invalid for {filename}")
+
+    if not (0 <= uniformity_val <= 1):
+        print(f"Warning: Uniformity value {uniformity_val:.6f} out of range for {filename}")
+        uniformity_val = max(0.0, min(1.0, uniformity_val))
+
+    return ssim_val, mse_val, psnr_val, uniformity_val
+
+
+# Utility metrics - CORRECTED VERSION
 def calculate_metrics(image, thresholds):
+    """Calculate all metrics with corrected formulas"""
     # Apply thresholds using midpoints
     segmented_image = np.zeros_like(image)
     thresholds = np.sort(thresholds)
@@ -81,12 +127,16 @@ def calculate_metrics(image, thresholds):
         mask = (image >= bins[i]) & (image < bins[i + 1])
         segmented_image[mask] = midpoints[i]
 
-    mse_value = np.mean((image - segmented_image) ** 2)
-    psnr_value = 10 * np.log10(255 ** 2 / mse_value) if mse_value != 0 else np.inf
-    ssim_value = ssim(image, segmented_image, data_range=segmented_image.max() - segmented_image.min())
+    # Use corrected metric functions
+    mse_value = calculate_mse(image, segmented_image)
+    psnr_value = calculate_psnr(mse_value)
+    ssim_value = calculate_ssim_value(image, segmented_image)
+    uniformity_value = calculate_uniformity(segmented_image)
 
-    histogram, _ = np.histogram(segmented_image, bins=256, range=(0, 256))
-    uniformity_value = np.sum((histogram / histogram.sum()) ** 2)
+    # Validate metrics
+    ssim_value, mse_value, psnr_value, uniformity_value = validate_metrics(
+        ssim_value, mse_value, psnr_value, uniformity_value, "image"
+    )
 
     return ssim_value, mse_value, psnr_value, uniformity_value, segmented_image
 
@@ -170,7 +220,7 @@ def otsu_fitness(image, thresholds):
 
 def main():
     input_folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    results_folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    results_folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results_corrected_ABC"
     images_folder = os.path.join(results_folder, "imagesPerThresholdLevel_ABC")
 
     if not os.path.exists(results_folder):
@@ -184,7 +234,7 @@ def main():
 
     for image_file in os.listdir(input_folder):
         image_path = os.path.join(input_folder, image_file)
-        if not (image_file.endswith('.png') or image_file.endswith('.jpg') or image_file.endswith('.tif')):
+        if not (image_file.lower().endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif'))):
             continue
 
         image = io.imread(image_path)
@@ -195,7 +245,7 @@ def main():
             for num_thresholds in threshold_levels:
                 # Generate and Set the Seed for this specific run
                 start_time = time.time()
-                run_seed = int((start_time * 10000) % 1000) + 1
+                run_seed = int((start_time * 10000) % 1000000) + 1  # More unique seed
                 random.seed(run_seed)
                 np.random.seed(run_seed)
 
@@ -214,6 +264,7 @@ def main():
                 # Calculate execution time
                 execution_time_ms = (time.time() - start_time) * 1000
 
+                # Use corrected metrics function
                 ssim_value, mse_value, psnr_value, uniformity_value, segmented_image = calculate_metrics(image,
                                                                                                          thresholds)
 
@@ -246,19 +297,34 @@ def main():
                 cv2.imwrite(output_path, segmented_image)
 
     # Save results to an Excel file
-    results_df = pd.DataFrame(results)
-    excel_path = os.path.join(results_folder, "ABC_results.xlsx")
+    if results:
+        results_df = pd.DataFrame(results)
+        excel_path = os.path.join(results_folder, "ABC_results_corrected.xlsx")
 
-    # Convert threshold values to regular integers to avoid np.int64 issues
-    results_df['threshold_value'] = results_df['threshold_value'].apply(lambda x: [int(val) for val in x])
-    results_df['fitness_value'] = results_df['fitness_value'].apply(lambda x: f"{x:,.8f}")
-    results_df['SSIM'] = results_df['SSIM'].apply(lambda x: f"{x:,.7f}")
-    results_df['MSE'] = results_df['MSE'].apply(lambda x: f"{x:,.7f}")
-    results_df['PSNR'] = results_df['PSNR'].apply(lambda x: f"{x:,.7f}")
-    results_df['Uniformity Measure'] = results_df['Uniformity Measure'].apply(lambda x: f"{x:,.7f}")
-    results_df['Execution Time (ms)'] = results_df['Execution Time (ms)'].apply(lambda x: f"{x:,.2f}")
+        # Convert threshold values to regular integers to avoid np.int64 issues
+        results_df['threshold_value'] = results_df['threshold_value'].apply(lambda x: [int(val) for val in x])
 
-    results_df.to_excel(excel_path, index=False)
+        # Format numeric columns (optional, for better Excel presentation)
+        results_df['fitness_value'] = results_df['fitness_value'].apply(lambda x: f"{x:.8f}")
+        results_df['SSIM'] = results_df['SSIM'].apply(lambda x: f"{x:.6f}")
+        results_df['MSE'] = results_df['MSE'].apply(lambda x: f"{x:.2f}")
+        results_df['PSNR'] = results_df['PSNR'].apply(lambda x: f"{x:.2f}")
+        results_df['Uniformity Measure'] = results_df['Uniformity Measure'].apply(lambda x: f"{x:.6f}")
+        results_df['Execution Time (ms)'] = results_df['Execution Time (ms)'].apply(lambda x: f"{x:.2f}")
+
+        results_df.to_excel(excel_path, index=False)
+
+        # Print summary of metric ranges for verification
+        print("\n=== Metric Ranges Summary ===")
+        print(f"SSIM range: [{min(r['SSIM'] for r in results):.6f}, {max(r['SSIM'] for r in results):.6f}]")
+        print(f"MSE range: [{min(r['MSE'] for r in results):.2f}, {max(r['MSE'] for r in results):.2f}]")
+        print(f"PSNR range: [{min(r['PSNR'] for r in results):.2f}, {max(r['PSNR'] for r in results):.2f}]")
+        print(
+            f"Uniformity range: [{min(r['Uniformity Measure'] for r in results):.6f}, {max(r['Uniformity Measure'] for r in results):.6f}]")
+
+        print(f"\nResults saved to: {excel_path}")
+    else:
+        print("No results to save.")
 
 
 if __name__ == "__main__":
