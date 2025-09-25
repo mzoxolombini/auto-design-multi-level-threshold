@@ -72,20 +72,52 @@ def calculate_otsu(hist, thresholds):
     return between_class_variance
 
 
+# Corrected Metrics Functions
 def calculate_mse(image1, image2):
-    return np.mean((image1.astype(np.float64) - image2.astype(np.float64)) ** 2)
+    """Calculate Mean Squared Error"""
+    # Convert to float64 to avoid integer overflow
+    image1_float = image1.astype(np.float64)
+    image2_float = image2.astype(np.float64)
+    return np.mean((image1_float - image2_float) ** 2)
 
 
 def calculate_psnr(mse_value, max_pixel=255.0):
+    """Calculate Peak Signal-to-Noise Ratio (corrected formula)"""
     if mse_value == 0:
         return float('inf')
-    return 20 * np.log10(max_pixel / np.sqrt(mse_value))
+    return 10 * np.log10((max_pixel ** 2) / mse_value)
+
+
+def calculate_ssim_value(image1, image2):
+    """Calculate Structural Similarity Index with correct data range"""
+    return ssim(image1, image2, data_range=255)
 
 
 def calculate_uniformity(image):
+    """Calculate Histogram Uniformity Measure"""
     hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
     hist_normalized = hist / hist.sum()
     return np.sum(hist_normalized ** 2)
+
+
+def validate_metrics(ssim_val, mse_val, psnr_val, uniformity_val, filename=""):
+    """Validate that all metrics are within expected ranges"""
+    if not (-1 <= ssim_val <= 1):
+        print(f"Warning: SSIM value {ssim_val:.6f} out of range for {filename}")
+        ssim_val = max(-1.0, min(1.0, ssim_val))  # Clamp to valid range
+
+    if mse_val < 0:
+        print(f"Warning: MSE value {mse_val:.6f} negative for {filename}")
+        mse_val = max(0.0, mse_val)
+
+    if psnr_val < 0 and psnr_val != float('inf'):
+        print(f"Warning: PSNR value {psnr_val:.6f} invalid for {filename}")
+
+    if not (0 <= uniformity_val <= 1):
+        print(f"Warning: Uniformity value {uniformity_val:.6f} out of range for {filename}")
+        uniformity_val = max(0.0, min(1.0, uniformity_val))
+
+    return ssim_val, mse_val, psnr_val, uniformity_val
 
 
 class GeneticAlgorithmILS:
@@ -232,7 +264,7 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
 
                         # Generate unique seed for this run
                         start_time = time.time()
-                        run_seed = int((start_time * 10000) % 1000) + 1
+                        run_seed = int((start_time * 10000) % 1000000) + 1  # More unique seed
                         random.seed(run_seed)
                         np.random.seed(run_seed)
 
@@ -252,13 +284,16 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
 
                         thresholded_image = apply_thresholds(image, best_solution)
 
-                        image_normalized = image / 255.0
-                        thresholded_normalized = thresholded_image / 255.0
-
+                        # Use corrected metric functions
                         mse_value = calculate_mse(image, thresholded_image)
                         psnr_value = calculate_psnr(mse_value)
-                        ssim_value = ssim(image_normalized, thresholded_normalized, data_range=1.0)
+                        ssim_value = calculate_ssim_value(image, thresholded_image)
                         uniformity_value = calculate_uniformity(thresholded_image)
+
+                        # Validate metrics
+                        ssim_value, mse_value, psnr_value, uniformity_value = validate_metrics(
+                            ssim_value, mse_value, psnr_value, uniformity_value, filename
+                        )
 
                         results.append({
                             'image_name': filename,
@@ -289,17 +324,26 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
 
     if results:
         df = pd.DataFrame(results)
-        output_file = os.path.join(output_path, "ILSGA_results.xlsx")
+        output_file = os.path.join(output_path, "ILSGA_results_corrected.xlsx")
 
         # Format the numeric columns for better Excel display
-        df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:,.8f}")
-        df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:,.7f}")
-        df['MSE'] = df['MSE'].apply(lambda x: f"{x:,.7f}")
-        df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:,.7f}")
-        df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:,.7f}")
-        df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:,.2f}")
+        df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:.8f}")
+        df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:.6f}")
+        df['MSE'] = df['MSE'].apply(lambda x: f"{x:.2f}")
+        df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:.2f}")
+        df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:.6f}")
+        df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:.2f}")
 
         df.to_excel(output_file, index=False)
+
+        # Print summary of metric ranges for verification
+        print("\n=== ILSGA Metric Ranges Summary ===")
+        print(f"SSIM range: [{min(r['SSIM'] for r in results):.6f}, {max(r['SSIM'] for r in results):.6f}]")
+        print(f"MSE range: [{min(r['MSE'] for r in results):.2f}, {max(r['MSE'] for r in results):.2f}]")
+        print(f"PSNR range: [{min(r['PSNR'] for r in results):.2f}, {max(r['PSNR'] for r in results):.2f}]")
+        print(
+            f"Uniformity range: [{min(r['Uniformity Measure'] for r in results):.6f}, {max(r['Uniformity Measure'] for r in results):.6f}]")
+
         print(f"Results saved to {output_file}")
         return df
     else:
@@ -332,7 +376,7 @@ def get_initial_params():
 
 if __name__ == "__main__":
     folder_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results_corrected_ILSGA"
 
     threshold_levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
     param_settings = get_initial_params()
