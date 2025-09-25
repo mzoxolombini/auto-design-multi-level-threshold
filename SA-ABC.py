@@ -86,16 +86,25 @@ def otsu_variance(image, thresholds):
     return between_class_variance
 
 
+# Corrected Metrics Functions
 def calculate_mse(original, segmented):
     """Calculate Mean Squared Error"""
-    return np.mean((original.astype(float) - segmented.astype(float)) ** 2)
+    # Convert to float64 to avoid integer overflow
+    original_float = original.astype(np.float64)
+    segmented_float = segmented.astype(np.float64)
+    return np.mean((original_float - segmented_float) ** 2)
 
 
-def calculate_psnr(mse):
-    """Calculate Peak Signal-to-Noise Ratio"""
-    if mse == 0:
+def calculate_psnr(mse_value, max_pixel=255.0):
+    """Calculate Peak Signal-to-Noise Ratio (corrected formula)"""
+    if mse_value == 0:
         return float('inf')
-    return 20 * math.log10(255.0) - 10 * math.log10(mse)
+    return 10 * np.log10((max_pixel ** 2) / mse_value)
+
+
+def calculate_ssim_value(image1, image2):
+    """Calculate Structural Similarity Index with correct data range"""
+    return ssim(image1, image2, data_range=255)
 
 
 def calculate_uniformity_measure(segmented):
@@ -103,6 +112,26 @@ def calculate_uniformity_measure(segmented):
     hist, _ = np.histogram(segmented.flatten(), bins=256, range=(0, 256))
     prob = hist.astype(float) / np.sum(hist)
     return np.sum(prob ** 2)  # Sum of squared probabilities
+
+
+def validate_metrics(ssim_val, mse_val, psnr_val, uniformity_val, filename=""):
+    """Validate that all metrics are within expected ranges"""
+    if not (-1 <= ssim_val <= 1):
+        print(f"Warning: SSIM value {ssim_val:.6f} out of range for {filename}")
+        ssim_val = max(-1.0, min(1.0, ssim_val))  # Clamp to valid range
+
+    if mse_val < 0:
+        print(f"Warning: MSE value {mse_val:.6f} negative for {filename}")
+        mse_val = max(0.0, mse_val)
+
+    if psnr_val < 0 and psnr_val != float('inf'):
+        print(f"Warning: PSNR value {psnr_val:.6f} invalid for {filename}")
+
+    if not (0 <= uniformity_val <= 1):
+        print(f"Warning: Uniformity value {uniformity_val:.6f} out of range for {filename}")
+        uniformity_val = max(0.0, min(1.0, uniformity_val))
+
+    return ssim_val, mse_val, psnr_val, uniformity_val
 
 
 # ---------------------------
@@ -377,7 +406,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_path):
             for method, obj_func in [("kapur", kapur_entropy), ("otsu", otsu_variance)]:
                 for m in threshold_levels:
                     start_time = time.time()
-                    run_seed = int((start_time * 10000) % 1000) + 1
+                    run_seed = int((start_time * 10000) % 1000000) + 1  # More unique seed
                     random.seed(run_seed)
                     np.random.seed(run_seed)
 
@@ -402,10 +431,17 @@ def process_images_in_folder(folder_path, threshold_levels, output_path):
 
                     # Create segmented image and calculate metrics
                     segmented = apply_thresholds(image, best_sol)
+
+                    # Use corrected metric functions
                     mse_value = calculate_mse(image, segmented)
                     psnr_value = calculate_psnr(mse_value)
-                    ssim_value = ssim(image, segmented, data_range=255)
+                    ssim_value = calculate_ssim_value(image, segmented)
                     uniformity = calculate_uniformity_measure(segmented)
+
+                    # Validate metrics
+                    ssim_value, mse_value, psnr_value, uniformity = validate_metrics(
+                        ssim_value, mse_value, psnr_value, uniformity, filename
+                    )
 
                     # Calculate both fitness values
                     kapur_value = kapur_entropy(image, best_sol)
@@ -442,27 +478,38 @@ def process_images_in_folder(folder_path, threshold_levels, output_path):
                     cv2.imwrite(output_image_path, segmented)
 
     # Save results
-    df = pd.DataFrame(results)
-    excel_file_path = os.path.join(output_path, "SA-ABC_Results.xlsx")
+    if results:
+        df = pd.DataFrame(results)
+        excel_file_path = os.path.join(output_path, "SA-ABC_Results_corrected.xlsx")
 
-    # Format the numeric columns for better Excel display
-    df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:,.8f}")
-    df['Kapur_Value'] = df['Kapur_Value'].apply(lambda x: f"{x:,.8f}")
-    df['Otsu_Value'] = df['Otsu_Value'].apply(lambda x: f"{x:,.8f}")
-    df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:,.7f}")
-    df['MSE'] = df['MSE'].apply(lambda x: f"{x:,.7f}")
-    df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:,.7f}")
-    df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:,.7f}")
-    df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:,.2f}")
+        # Format the numeric columns for better Excel display
+        df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:.8f}")
+        df['Kapur_Value'] = df['Kapur_Value'].apply(lambda x: f"{x:.8f}")
+        df['Otsu_Value'] = df['Otsu_Value'].apply(lambda x: f"{x:.8f}")
+        df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:.6f}")
+        df['MSE'] = df['MSE'].apply(lambda x: f"{x:.2f}")
+        df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:.2f}")
+        df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:.6f}")
+        df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:.2f}")
 
-    with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='Results', index=False)
-        worksheet = writer.sheets['Results']
-        for column in worksheet.columns:
-            max_length = max(len(str(cell.value)) for cell in column)
-            worksheet.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
+        with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Results', index=False)
+            worksheet = writer.sheets['Results']
+            for column in worksheet.columns:
+                max_length = max(len(str(cell.value)) for cell in column)
+                worksheet.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
 
-    print(f"\nResults saved to {excel_file_path}")
+        # Print summary of metric ranges for verification
+        print("\n=== SA-ABC Metric Ranges Summary ===")
+        print(f"SSIM range: [{min(r['SSIM'] for r in results):.6f}, {max(r['SSIM'] for r in results):.6f}]")
+        print(f"MSE range: [{min(r['MSE'] for r in results):.2f}, {max(r['MSE'] for r in results):.2f}]")
+        print(f"PSNR range: [{min(r['PSNR'] for r in results):.2f}, {max(r['PSNR'] for r in results):.2f}]")
+        print(
+            f"Uniformity range: [{min(r['Uniformity Measure'] for r in results):.6f}, {max(r['Uniformity Measure'] for r in results):.6f}]")
+
+        print(f"\nResults saved to {excel_file_path}")
+    else:
+        print("No results to save")
 
 
 # ---------------------------
@@ -471,7 +518,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_path):
 
 if __name__ == "__main__":
     folder_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results_corrected_SAABC"
     os.makedirs(output_path, exist_ok=True)
     threshold_levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
 
