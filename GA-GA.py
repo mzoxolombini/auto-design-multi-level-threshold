@@ -8,6 +8,7 @@ import math
 import time
 import json
 import locale
+from skimage.metrics import structural_similarity as ssim
 
 # Set locale for comma decimal separator
 try:
@@ -16,21 +17,55 @@ except Exception:
     pass
 
 
-# SSIM implementation
-def ssim(image1, image2, C1=0.01 ** 2, C2=0.03 ** 2):
-    kernel = np.ones((3, 3)) / 9
-    mu1 = correlate(image1, kernel, mode='reflect')
-    mu2 = correlate(image2, kernel, mode='reflect')
-    mu1_sq = mu1 ** 2
-    mu2_sq = mu2 ** 2
-    mu1_mu2 = mu1 * mu2
-    sigma1_sq = correlate(image1 ** 2, kernel, mode='reflect') - mu1_sq
-    sigma2_sq = correlate(image2 ** 2, kernel, mode='reflect') - mu2_sq
-    sigma12 = correlate(image1 * image2, kernel, mode='reflect') - mu1_mu2
+# Corrected Metrics Functions
+def calculate_mse(image1, image2):
+    """Calculate Mean Squared Error"""
+    # Convert to float64 to avoid integer overflow
+    image1_float = image1.astype(np.float64)
+    image2_float = image2.astype(np.float64)
+    return float(np.mean((image1_float - image2_float) ** 2))
 
-    numerator = (2 * mu1_mu2 + C1) * (2 * sigma12 + C2)
-    denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
-    return float(np.mean(numerator / (denominator + 1e-10)))
+
+def calculate_psnr(mse_value, max_pixel=255.0):
+    """Calculate Peak Signal-to-Noise Ratio (corrected formula)"""
+    if mse_value == 0:
+        return float('inf')
+    return 10 * math.log10((max_pixel ** 2) / mse_value)
+
+
+def calculate_ssim_value(image1, image2):
+    """Calculate Structural Similarity Index with correct data range"""
+    return float(ssim(image1, image2, data_range=255))
+
+
+def calculate_uniformity(image):
+    """Calculate Histogram Uniformity Measure"""
+    hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+    s = hist.sum()
+    if s == 0:
+        return 0.0
+    hist_normalized = hist / s
+    return float(np.sum(hist_normalized ** 2))
+
+
+def validate_metrics(ssim_val, mse_val, psnr_val, uniformity_val, filename=""):
+    """Validate that all metrics are within expected ranges"""
+    if not (-1 <= ssim_val <= 1):
+        print(f"Warning: SSIM value {ssim_val:.6f} out of range for {filename}")
+        ssim_val = max(-1.0, min(1.0, ssim_val))  # Clamp to valid range
+
+    if mse_val < 0:
+        print(f"Warning: MSE value {mse_val:.6f} negative for {filename}")
+        mse_val = max(0.0, mse_val)
+
+    if psnr_val < 0 and psnr_val != float('inf'):
+        print(f"Warning: PSNR value {psnr_val:.6f} invalid for {filename}")
+
+    if not (0 <= uniformity_val <= 1):
+        print(f"Warning: Uniformity value {uniformity_val:.6f} out of range for {filename}")
+        uniformity_val = max(0.0, min(1.0, uniformity_val))
+
+    return ssim_val, mse_val, psnr_val, uniformity_val
 
 
 # Kapur entropy
@@ -75,25 +110,6 @@ def calculate_otsu(hist, thresholds):
             mu = float(np.sum(bins[thr[i - 1]:thr[i]] * probs[thr[i - 1]:thr[i]]) / w)
             between_var += w * (mu - global_mean) ** 2
     return float(between_var)
-
-
-def calculate_mse(image1, image2):
-    return float(np.mean((image1.astype(np.float64) - image2.astype(np.float64)) ** 2))
-
-
-def calculate_psnr(mse_value, max_pixel=255.0):
-    if mse_value == 0:
-        return float('inf')
-    return 20 * math.log10(max_pixel / math.sqrt(mse_value))
-
-
-def calculate_uniformity(image):
-    hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
-    s = hist.sum()
-    if s == 0:
-        return 0.0
-    hist_normalized = hist / s
-    return float(np.sum(hist_normalized ** 2))
 
 
 def apply_thresholds(image, thresholds):
@@ -390,10 +406,16 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
 
                     thresholded_image = apply_thresholds(image, best_solution)
 
+                    # Use corrected metric functions
                     mse_value = calculate_mse(image, thresholded_image)
                     psnr_value = calculate_psnr(mse_value)
-                    ssim_value = ssim(image, thresholded_image)
+                    ssim_value = calculate_ssim_value(image, thresholded_image)
                     uniformity_value = calculate_uniformity(thresholded_image)
+
+                    # Validate metrics
+                    ssim_value, mse_value, psnr_value, uniformity_value = validate_metrics(
+                        ssim_value, mse_value, psnr_value, uniformity_value, filename
+                    )
 
                     threshold_str = f"[{', '.join(map(str, sorted(best_solution)))}]"
 
@@ -442,12 +464,22 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
     df = df[column_order]
 
     os.makedirs(output_path, exist_ok=True)
-    output_file = os.path.join(output_path, 'GAGA_Results.xlsx')
+    output_file = os.path.join(output_path, 'GAGA_Results_corrected.xlsx')
+
     try:
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
             df.to_excel(writer, index=False)
     except Exception:
         df.to_excel(output_file, index=False)
+
+    # Print summary of metric ranges for verification
+    if results:
+        print("\n=== GAGA Metric Ranges Summary ===")
+        print(f"SSIM range: [{min(r['SSIM'] for r in results):.6f}, {max(r['SSIM'] for r in results):.6f}]")
+        print(f"MSE range: [{min(r['MSE'] for r in results):.2f}, {max(r['MSE'] for r in results):.2f}]")
+        print(f"PSNR range: [{min(r['PSNR'] for r in results):.2f}, {max(r['PSNR'] for r in results):.2f}]")
+        print(
+            f"Uniformity range: [{min(r['Uniformity Measure'] for r in results):.6f}, {max(r['Uniformity Measure'] for r in results):.6f}]")
 
     print(f"\nResults saved to {output_file}")
     return df
@@ -455,7 +487,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
 
 if __name__ == '__main__':
     folder_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results_corrected_GAGA"
     quick_test = True
 
     if quick_test:
