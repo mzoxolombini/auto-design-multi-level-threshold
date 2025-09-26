@@ -220,7 +220,7 @@ def otsu_fitness(image, thresholds):
 
 def main():
     input_folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    results_folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results_corrected_ABC"
+    results_folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
     images_folder = os.path.join(results_folder, "imagesPerThresholdLevel_ABC")
 
     if not os.path.exists(results_folder):

@@ -376,7 +376,7 @@ def get_initial_params():
 
 if __name__ == "__main__":
     folder_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results_corrected_ILSGA"
+    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
 
     threshold_levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
     param_settings = get_initial_params()
