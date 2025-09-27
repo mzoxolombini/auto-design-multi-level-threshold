@@ -16,7 +16,7 @@ import time
 # ===============================
 
 def calculate_histogram(image):
-    """Compute normalized histogram of grayscale image."""
+    """Calculate normalized histogram of an image."""
     hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
     total = hist.sum()
     if total == 0:
@@ -25,32 +25,26 @@ def calculate_histogram(image):
 
 
 def kapur_entropy(hist, thresholds):
+    """Calculate Kapur's entropy for multilevel thresholding."""
     if len(thresholds) == 0:
         return 0.0
 
-    thresholds = sorted([int(round(t)) for t in thresholds])
-    bins = [0] + thresholds + [256]  # Changed from len(hist) to 256
+    thresholds = sorted(thresholds)
+    bins = [0] + thresholds + [256]
     total_entropy = 0.0
 
-    # Precompute cumulative sums
-    cumulative = np.cumsum(hist)
-    # Add a 0 at the beginning to handle index 0 correctly
-    cumulative = np.concatenate(([0], cumulative))
-
     for i in range(len(bins) - 1):
-        start = bins[i]
-        end = bins[i + 1]
+        start = int(bins[i])
+        end = int(bins[i + 1])
 
-        if start >= end:  # Skip invalid ranges
+        if start >= end:
             continue
 
         class_hist = hist[start:end]
-        # Use cumulative array with proper indexing
-        prob_sum = cumulative[end] - cumulative[start]
+        class_sum = np.sum(class_hist)
 
-        if prob_sum > 1e-10:
-            # Remove zero probabilities to avoid log(0)
-            class_probs = class_hist / prob_sum
+        if class_sum > 1e-10:
+            class_probs = class_hist / class_sum
             class_probs_nonzero = class_probs[class_probs > 1e-10]
 
             if len(class_probs_nonzero) > 0:
@@ -61,45 +55,40 @@ def kapur_entropy(hist, thresholds):
 
 
 def otsu_between_class_variance(hist, thresholds):
+    """Calculate Otsu's between-class variance for multilevel thresholding."""
     if len(thresholds) == 0:
         return 0.0
 
-    thresholds = sorted([int(round(t)) for t in thresholds])
-    bins = [0] + thresholds + [256]  # Changed from len(hist) to 256
+    thresholds = sorted(thresholds)
+    bins = [0] + thresholds + [256]
 
     total_weight = np.sum(hist)
     if total_weight == 0:
         return 0.0
 
-    global_mean = np.sum(np.arange(256) * hist) / total_weight  # Fixed: use 256 instead of len(hist)
+    global_mean = np.sum(np.arange(256) * hist) / total_weight
     between_class_variance = 0.0
 
-    cumulative = np.cumsum(hist)
-    cumulative = np.concatenate(([0], cumulative))  # Add 0 at beginning
-
-    mean_cumulative = np.cumsum(np.arange(256) * hist)  # Fixed: use 256 instead of len(hist)
-    mean_cumulative = np.concatenate(([0], mean_cumulative))  # Add 0 at beginning
-
     for i in range(len(bins) - 1):
-        start = bins[i]
-        end = bins[i + 1]
+        start = int(bins[i])
+        end = int(bins[i + 1])
 
-        if start >= end:  # Skip invalid ranges
+        if start >= end:
             continue
 
-        w = cumulative[end] - cumulative[start]  # Fixed indexing
+        class_hist = hist[start:end]
+        class_weight = np.sum(class_hist)
 
-        if w > 1e-10:
-            m_sum = mean_cumulative[end] - mean_cumulative[start]  # Fixed indexing
-            m = m_sum / w
-            between_class_variance += w * (m - global_mean) ** 2
+        if class_weight > 1e-10:
+            intensity_values = np.arange(start, end)
+            class_mean = np.sum(intensity_values * class_hist) / class_weight
+            between_class_variance += class_weight * (class_mean - global_mean) ** 2
 
     return between_class_variance / total_weight
 
 
 def calculate_ssim(original, segmented):
-    """Calculate Structural Similarity Index (SSIM) between original and segmented images (corrected)."""
-    # Ensure images have the same dimensions
+    """Calculate SSIM using scikit-image."""
     min_shape = (min(original.shape[0], segmented.shape[0]),
                  min(original.shape[1], segmented.shape[1]))
 
@@ -108,14 +97,12 @@ def calculate_ssim(original, segmented):
     if segmented.shape != min_shape:
         segmented = cv2.resize(segmented, min_shape[::-1])
 
-    # Use data_range=255 for 8-bit images
     data_range = 255 if original.max() > 1.0 else 1.0
     return ssim_skimage(original, segmented, data_range=data_range)
 
 
 def calculate_mse(original, segmented):
-    """Calculate Mean Squared Error (MSE) between original and segmented images."""
-    # Ensure images have the same dimensions
+    """Calculate Mean Squared Error."""
     min_shape = (min(original.shape[0], segmented.shape[0]),
                  min(original.shape[1], segmented.shape[1]))
 
@@ -128,82 +115,87 @@ def calculate_mse(original, segmented):
 
 
 def calculate_psnr(original, segmented):
-    """Calculate Peak Signal-to-Noise Ratio (PSNR) between original and segmented images (corrected)."""
+    """Calculate PSNR."""
     mse = calculate_mse(original, segmented)
     if mse == 0:
         return float('inf')
     max_pixel = 255.0
-    return 10 * math.log10((max_pixel ** 2) / mse)  # Corrected formula
+    return 10 * math.log10((max_pixel ** 2) / mse)
 
 
 def calculate_uniformity_measure(segmented, thresholds):
-    """Calculate Uniformity Measure for segmented image (corrected)."""
+    """Calculate uniformity measure based on within-class variance (corrected version)."""
     if len(thresholds) == 0:
         return 0.0
 
-    uniformity = 0.0
     total_pixels = segmented.size
     if total_pixels == 0:
         return 0.0
 
-    # Sort thresholds and add boundaries
     sorted_thresholds = sorted(thresholds)
-    region_boundaries = [0] + sorted_thresholds + [255]
 
-    for i in range(len(region_boundaries) - 1):
-        lower = region_boundaries[i]
-        upper = region_boundaries[i + 1]
+    # Create class labels and calculate class means
+    class_means = []
+    class_weights = []
 
-        # Create mask for current region
-        mask = (segmented >= lower) & (segmented <= upper)
-        region_pixels = np.sum(mask)
+    # Class 0: pixels <= first threshold
+    mask_0 = segmented <= sorted_thresholds[0]
+    if np.sum(mask_0) > 0:
+        class_means.append(np.mean(segmented[mask_0]))
+        class_weights.append(np.sum(mask_0) / total_pixels)
 
-        if region_pixels > 0:
-            # Calculate mean intensity in the region
-            region_mean = np.mean(segmented[mask])
+    # Middle classes
+    for i in range(1, len(sorted_thresholds)):
+        mask = (segmented > sorted_thresholds[i - 1]) & (segmented <= sorted_thresholds[i])
+        if np.sum(mask) > 0:
+            class_means.append(np.mean(segmented[mask]))
+            class_weights.append(np.sum(mask) / total_pixels)
 
-            # Calculate variance in the region
-            variance = np.var(segmented[mask])
+    # Last class: pixels > last threshold
+    mask_last = segmented > sorted_thresholds[-1]
+    if np.sum(mask_last) > 0:
+        class_means.append(np.mean(segmented[mask_last]))
+        class_weights.append(np.sum(mask_last) / total_pixels)
 
-            # Calculate maximum possible variance for this intensity range
-            max_variance = ((upper - lower) ** 2) / 4.0  # Maximum variance for uniform distribution
+    if len(class_means) == 0:
+        return 0.0
 
-            if max_variance > 0:
-                # Uniformity measure: 1 - (actual_variance / max_possible_variance)
-                region_uniformity = 1.0 - (variance / max_variance)
-                region_uniformity = max(0.0, min(1.0, region_uniformity))  # Clip to [0,1]
+    # Calculate overall mean
+    overall_mean = np.mean(segmented)
 
-                # Weight by region size
-                uniformity += region_uniformity * (region_pixels / total_pixels)
+    # Calculate between-class variance
+    between_class_variance = 0.0
+    for mean, weight in zip(class_means, class_weights):
+        between_class_variance += weight * (mean - overall_mean) ** 2
 
-    return uniformity
+    # Calculate total variance
+    total_variance = np.var(segmented)
+
+    if total_variance == 0:
+        return 1.0
+
+    # Uniformity measure = between_class_variance / total_variance
+    # This measures how well the thresholds separate the classes
+    uniformity = between_class_variance / total_variance
+    return max(0.0, min(1.0, uniformity))
 
 
 def apply_thresholds(image, thresholds):
-    """Apply thresholds to image to create segmented image (corrected)."""
+    """Apply multiple thresholds to segment an image."""
     if len(thresholds) == 0:
         return np.zeros_like(image)
 
-    # Sort thresholds
     thresholds = sorted(thresholds)
-
-    # Create segmented image
     segmented = np.zeros_like(image, dtype=np.uint8)
 
-    # First region: 0 to first threshold
-    mask = image <= thresholds[0]
-    segmented[mask] = 0
+    segmented[image <= thresholds[0]] = 0
 
-    # Middle regions
     for i in range(1, len(thresholds)):
         mask = (image > thresholds[i - 1]) & (image <= thresholds[i])
         segmented[mask] = i
 
-    # Last region: last threshold to 255
-    mask = image > thresholds[-1]
-    segmented[mask] = len(thresholds)
+    segmented[image > thresholds[-1]] = len(thresholds)
 
-    # Normalize to 0-255 for better visualization
     max_class = len(thresholds)
     if max_class > 0:
         segmented = (segmented * (255 // max_class)).astype(np.uint8)
@@ -217,132 +209,171 @@ def format_number(value, decimals=8):
         return str(value)
     if np.isinf(value):
         return "Infinity"
-    fmt = f"{value:.{decimals}f}"
-    return fmt.replace('.', ',')
+    if np.isnan(value):
+        return "NaN"
+    return f"{value:.{decimals}f}"
 
 
 # ===============================
-# Corrected Artificial Bee Colony
+# Artificial Bee Colony Algorithm
 # ===============================
 
-class PureArtificialBeeColony:
+class ArtificialBeeColony:
     def __init__(self, config, num_thresholds, hist, fitness_func, seed=None):
         if seed is not None:
             np.random.seed(seed)
             random.seed(seed)
 
-        self.pop_size = config['pop_size']
-        self.max_generations = config['max_generations']
-        self.limit = int(config['limit_ratio'] * self.pop_size)
-        self.mutation_factor = config['mutation_factor']
+        # ABC parameters from literature (typical values)
+        self.colony_size = config['colony_size']  # SN (number of food sources)
+        self.max_iterations = config['max_iterations']  # Maximum cycles
+        self.limit = config['limit']  # Abandonment limit
         self.num_thresholds = num_thresholds
         self.hist = hist
         self.fitness_func = fitness_func
 
-        # Initialize population with unique thresholds
-        self.population = []
-        for _ in range(self.pop_size):
-            individual = np.sort(np.random.choice(range(1, 255), num_thresholds, replace=False))
-            self.population.append(individual)
+        self.fitness_cache = {}
 
-        self.fitness = [self.fitness_func(self.hist, ind) for ind in self.population]
-        self.trial_counters = np.zeros(self.pop_size)
-        self.best_solution = self.population[np.argmax(self.fitness)].copy()
-        self.best_fitness = max(self.fitness)
+        # Initialize food sources (solutions)
+        self.food_sources = []
+        for _ in range(self.colony_size):
+            individual = np.sort(np.random.choice(range(1, 255), num_thresholds, replace=False))
+            self.food_sources.append(individual)
+
+        self.fitness_values = [self.evaluate(ind) for ind in self.food_sources]
+        self.trial_counters = [0] * self.colony_size  # Trial counters for each food source
+        self.best_solution = self.food_sources[np.argmax(self.fitness_values)].copy()
+        self.best_fitness = max(self.fitness_values)
+
+    def evaluate(self, individual):
+        """Evaluate fitness of an individual."""
+        key = tuple(individual)
+        if key not in self.fitness_cache:
+            try:
+                self.fitness_cache[key] = self.fitness_func(self.hist, individual)
+            except Exception as e:
+                print(f"Fitness evaluation error: {e}")
+                self.fitness_cache[key] = float('-inf')
+        return self.fitness_cache[key]
+
+    def employed_bee_phase(self):
+        """Employed bee phase: generate new solutions and apply greedy selection."""
+        for i in range(self.colony_size):
+            # Generate a new solution by modifying the current one
+            new_solution = self.generate_new_solution(i)
+            new_fitness = self.evaluate(new_solution)
+
+            # Greedy selection
+            if new_fitness > self.fitness_values[i]:
+                self.food_sources[i] = new_solution
+                self.fitness_values[i] = new_fitness
+                self.trial_counters[i] = 0
+
+                # Update best solution
+                if new_fitness > self.best_fitness:
+                    self.best_solution = new_solution.copy()
+                    self.best_fitness = new_fitness
+            else:
+                self.trial_counters[i] += 1
+
+    def onlooker_bee_phase(self):
+        """Onlooker bee phase: select solutions based on fitness and generate new ones."""
+        # Calculate probabilities based on fitness (roulette wheel selection)
+        fitness_array = np.array(self.fitness_values)
+        # Handle negative fitness values by shifting to positive range
+        min_fitness = np.min(fitness_array)
+        if min_fitness < 0:
+            fitness_array = fitness_array - min_fitness + 1e-10
+
+        probabilities = fitness_array / np.sum(fitness_array)
+
+        for i in range(self.colony_size):
+            # Select a food source based on probability
+            selected_idx = np.random.choice(self.colony_size, p=probabilities)
+
+            # Generate a new solution
+            new_solution = self.generate_new_solution(selected_idx)
+            new_fitness = self.evaluate(new_solution)
+
+            # Greedy selection
+            if new_fitness > self.fitness_values[selected_idx]:
+                self.food_sources[selected_idx] = new_solution
+                self.fitness_values[selected_idx] = new_fitness
+                self.trial_counters[selected_idx] = 0
+
+                # Update best solution
+                if new_fitness > self.best_fitness:
+                    self.best_solution = new_solution.copy()
+                    self.best_fitness = new_fitness
+            else:
+                self.trial_counters[selected_idx] += 1
+
+    def scout_bee_phase(self):
+        """Scout bee phase: abandon exhausted solutions and create new ones."""
+        for i in range(self.colony_size):
+            if self.trial_counters[i] >= self.limit:
+                # Abandon this food source and create a new one
+                new_solution = np.sort(np.random.choice(range(1, 255), self.num_thresholds, replace=False))
+                new_fitness = self.evaluate(new_solution)
+
+                self.food_sources[i] = new_solution
+                self.fitness_values[i] = new_fitness
+                self.trial_counters[i] = 0
+
+                # Update best solution if needed
+                if new_fitness > self.best_fitness:
+                    self.best_solution = new_solution.copy()
+                    self.best_fitness = new_fitness
+
+    def generate_new_solution(self, current_idx):
+        """Generate a new solution by modifying a current solution."""
+        current_solution = self.food_sources[current_idx].copy()
+
+        # Select a random dimension to modify
+        dim = np.random.randint(0, self.num_thresholds)
+
+        # Select a random partner different from current_idx
+        partner_idx = np.random.choice([j for j in range(self.colony_size) if j != current_idx])
+        partner_solution = self.food_sources[partner_idx]
+
+        # Generate new value using ABC mutation formula
+        phi = np.random.uniform(-1, 1)
+        new_val = current_solution[dim] + phi * (current_solution[dim] - partner_solution[dim])
+
+        # Ensure the value is within bounds and integer
+        new_val = int(np.clip(new_val, 1, 254))
+
+        # Ensure uniqueness of thresholds
+        while new_val in current_solution:
+            new_val = np.random.randint(1, 255)
+
+        current_solution[dim] = new_val
+        return np.sort(current_solution)
 
     def evolve(self):
-        """Run ABC optimization."""
-        for generation in range(self.max_generations):
-            # Employed bee phase
-            for i in range(self.pop_size):
-                # Select a random different bee
-                k = np.random.choice([j for j in range(self.pop_size) if j != i])
+        """Run ABC algorithm evolution."""
+        print(f"ABC Initial best fitness: {self.best_fitness:.6f}")
 
-                # Generate candidate solution
-                candidate = self.population[i].copy()
-                d = np.random.randint(0, self.num_thresholds)  # Random dimension
-                phi = np.random.uniform(-1, 1) * self.mutation_factor
+        for iteration in range(self.max_iterations):
+            self.employed_bee_phase()
+            self.onlooker_bee_phase()
+            self.scout_bee_phase()
 
-                candidate[d] = int(np.clip(
-                    candidate[d] + phi * (candidate[d] - self.population[k][d]),
-                    1, 254  # Keep within valid range
-                ))
-                candidate.sort()
-
-                candidate_fitness = self.fitness_func(self.hist, candidate)
-
-                # Greedy selection
-                if candidate_fitness > self.fitness[i]:
-                    self.population[i] = candidate
-                    self.fitness[i] = candidate_fitness
-                    self.trial_counters[i] = 0
-
-                    # Update global best
-                    if candidate_fitness > self.best_fitness:
-                        self.best_solution = candidate.copy()
-                        self.best_fitness = candidate_fitness
-                else:
-                    self.trial_counters[i] += 1
-
-            # Onlooker bee phase (simplified - same as employed phase in basic ABC)
-            for i in range(self.pop_size):
-                # Select based on fitness probability
-                fitness_probs = np.array(self.fitness) - min(self.fitness) + 1e-10
-                fitness_probs = fitness_probs / fitness_probs.sum()
-                i_onlooker = np.random.choice(range(self.pop_size), p=fitness_probs)
-
-                k = np.random.choice([j for j in range(self.pop_size) if j != i_onlooker])
-                candidate = self.population[i_onlooker].copy()
-                d = np.random.randint(0, self.num_thresholds)
-                phi = np.random.uniform(-1, 1) * self.mutation_factor
-
-                candidate[d] = int(np.clip(
-                    candidate[d] + phi * (candidate[d] - self.population[k][d]),
-                    1, 254
-                ))
-                candidate.sort()
-
-                candidate_fitness = self.fitness_func(self.hist, candidate)
-
-                if candidate_fitness > self.fitness[i_onlooker]:
-                    self.population[i_onlooker] = candidate
-                    self.fitness[i_onlooker] = candidate_fitness
-                    self.trial_counters[i_onlooker] = 0
-
-                    if candidate_fitness > self.best_fitness:
-                        self.best_solution = candidate.copy()
-                        self.best_fitness = candidate_fitness
-                else:
-                    self.trial_counters[i_onlooker] += 1
-
-            # Scout bee phase
-            for i in range(self.pop_size):
-                if self.trial_counters[i] > self.limit:
-                    self.population[i] = np.sort(np.random.choice(range(1, 255), self.num_thresholds, replace=False))
-                    self.fitness[i] = self.fitness_func(self.hist, self.population[i])
-                    self.trial_counters[i] = 0
-
-                    if self.fitness[i] > self.best_fitness:
-                        self.best_solution = self.population[i].copy()
-                        self.best_fitness = self.fitness[i]
-
-            # Print progress every 10 generations
-            if generation % 10 == 0:
-                print(f"ABC Generation {generation}: Best fitness = {self.best_fitness:.6f}")
+            if iteration % 10 == 0:
+                print(f"ABC Iteration {iteration}: Best fitness = {self.best_fitness:.6f}")
 
         return self.best_solution, self.best_fitness
 
 
 # ===============================
-# Corrected Differential Evolution Configurator
+# Differential Evolution Configurator (Modified for ABC)
 # ===============================
 
 class DEABCConfigurator:
-    def __init__(self, de_pop_size=20, de_generations=20, F=0.5, CR=0.9, seed=None):
+    def __init__(self, de_pop_size=10, de_generations=10, F=0.5, CR=0.9, seed=None):
         if seed is not None:
             np.random.seed(seed)
             random.seed(seed)
-
         self.de_pop_size = de_pop_size
         self.de_generations = de_generations
         self.F = F
@@ -356,73 +387,58 @@ class DEABCConfigurator:
 
         hist = calculate_histogram(image)
 
-        # Parameter bounds
+        # Parameter bounds based on literature values for ABC
         bounds = {
-            'pop_size': (20, 100),
-            'max_generations': (50, 200),
-            'mutation_factor': (0.1, 1.0),
-            'limit_ratio': (0.1, 0.5)
+            'colony_size': (10, 50),  # SN: number of food sources
+            'max_iterations': (50, 200),  # Maximum cycles
+            'limit': (5, 50)  # Abandonment limit
         }
 
-        # Initialize population
         population = []
         for _ in range(self.de_pop_size):
             individual = {
-                'pop_size': random.randint(bounds['pop_size'][0], bounds['pop_size'][1]),
-                'max_generations': random.randint(bounds['max_generations'][0], bounds['max_generations'][1]),
-                'mutation_factor': random.uniform(bounds['mutation_factor'][0], bounds['mutation_factor'][1]),
-                'limit_ratio': random.uniform(bounds['limit_ratio'][0], bounds['limit_ratio'][1])
+                'colony_size': random.randint(bounds['colony_size'][0], bounds['colony_size'][1]),
+                'max_iterations': random.randint(bounds['max_iterations'][0], bounds['max_iterations'][1]),
+                'limit': random.randint(bounds['limit'][0], bounds['limit'][1])
             }
             population.append(individual)
 
-        # Evaluate initial population
-        fitness = [self.evaluate(ind, num_thresholds, hist, fitness_func, seed)
-                   for ind in population]
+        fitness = []
+        for ind in population:
+            fitness.append(self.evaluate(ind, num_thresholds, hist, fitness_func, seed))
 
-        # Differential Evolution optimization
         for gen in range(self.de_generations):
             for i in range(self.de_pop_size):
-                # Select three distinct individuals
                 indices = [j for j in range(self.de_pop_size) if j != i]
                 a, b, c = population[np.random.choice(indices, 3, replace=False)]
 
-                # Create trial individual
                 trial = {}
                 for key in population[i].keys():
                     if random.random() < self.CR:
-                        if key in ['pop_size', 'max_generations']:
-                            # Integer parameters
-                            val = int(round(a[key] + self.F * (b[key] - c[key])))
-                            val = max(bounds[key][0], min(bounds[key][1], val))
-                        else:
-                            # Continuous parameters
-                            val = a[key] + self.F * (b[key] - c[key])
-                            val = max(bounds[key][0], min(bounds[key][1], val))
+                        # Integer parameters for ABC
+                        val = int(round(a[key] + self.F * (b[key] - c[key])))
+                        val = max(bounds[key][0], min(bounds[key][1], val))
                         trial[key] = val
                     else:
                         trial[key] = population[i][key]
 
-                # Evaluate trial
                 trial_fitness = self.evaluate(trial, num_thresholds, hist, fitness_func, seed)
 
-                # Selection
                 if trial_fitness > fitness[i]:
                     population[i] = trial
                     fitness[i] = trial_fitness
 
-            # Print progress
             if gen % 5 == 0:
                 best_fit = max(fitness)
                 print(f"DE Generation {gen}: Best fitness = {best_fit:.6f}")
 
-        # Return best individual
         best_index = np.argmax(fitness)
         return population[best_index]
 
     def evaluate(self, config, num_thresholds, hist, fitness_func, seed=None):
         """Evaluate ABC configuration."""
         try:
-            abc = PureArtificialBeeColony(config, num_thresholds, hist, fitness_func, seed)
+            abc = ArtificialBeeColony(config, num_thresholds, hist, fitness_func, seed)
             _, best_fitness = abc.evolve()
             return best_fitness
         except Exception as e:
@@ -431,21 +447,18 @@ class DEABCConfigurator:
 
 
 # ===============================
-# Corrected Image Processing
+# Image Processing
 # ===============================
 
 def process_single(file_name, folder_path, num_thresholds, func_name, de_configurator, seed=None, images_folder=None):
     """Process a single image with given parameters."""
     try:
-        # Generate unique seed for this run
         run_seed = (seed + hash(file_name) + num_thresholds + hash(func_name)) % 1000000
         np.random.seed(run_seed)
         random.seed(run_seed)
 
-        # Start timing
         start_time = time.time()
 
-        # Load image
         image_path = os.path.join(folder_path, file_name)
         image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         if image is None:
@@ -454,23 +467,24 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
 
         print(f"[START] Processing {file_name} | {func_name} | thresholds={num_thresholds}")
 
-        # Calculate histogram
         hist = calculate_histogram(image)
-
-        # Select fitness function
         fitness_function = kapur_entropy if func_name == "kapur" else otsu_between_class_variance
 
-        # Optimize ABC parameters using DE
-        optimal_config = de_configurator.optimize_abc_params(num_thresholds, image, fitness_function, run_seed)
+        # ABC parameters from literature (typical values)
+        config = {
+            'colony_size': 20,  # Number of food sources
+            'max_iterations': 100,  # Maximum cycles
+            'limit': 10  # Abandonment limit
+        }
 
-        # Run ABC with optimized parameters
-        abc = PureArtificialBeeColony(optimal_config, num_thresholds, hist, fitness_function, run_seed)
+        # Uncomment to use DE optimization for ABC parameters
+        # config = de_configurator.optimize_abc_params(num_thresholds, image, fitness_function, run_seed)
+
+        abc = ArtificialBeeColony(config, num_thresholds, hist, fitness_function, run_seed)
         best_thresholds, best_score = abc.evolve()
 
-        # Calculate execution time
         execution_time_ms = (time.time() - start_time) * 1000
 
-        # Apply thresholds and calculate metrics
         segmented_image = apply_thresholds(image, best_thresholds)
 
         ssim_value = calculate_ssim(image, segmented_image)
@@ -479,7 +493,6 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
         uniformity = calculate_uniformity_measure(segmented_image, best_thresholds)
         threshold_value_str = "[" + ", ".join(map(str, best_thresholds)) + "]"
 
-        # Save segmented image
         if images_folder:
             image_name_base = os.path.splitext(file_name)[0]
             output_filename = f"{image_name_base}_{func_name}_{num_thresholds}_thresholds.png"
@@ -503,9 +516,10 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
             "Execution Time (ms)": execution_time_ms
         }
 
-
     except Exception as e:
         print(f"[ERROR] Processing {file_name} | {func_name}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {
             "image_name": file_name,
             "fitness_function": func_name,
@@ -513,15 +527,57 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
         }
 
 
-def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=-1, seed=None):
-    """Main function to process all images in a folder."""
-    # Create output directories
-    output_path = os.path.dirname(output_file)
-    images_folder = os.path.join(output_path, "imagesPerThresholdLevel_DEABC")
-    if not os.path.exists(images_folder):
-        os.makedirs(images_folder)
+def safe_save_excel(df, filepath):
+    """Safely save DataFrame to Excel with error handling."""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Close any open file handles first
+            import gc
+            gc.collect()
 
-    # Get image files
+            # Try to save with a temporary filename first
+            temp_filepath = filepath.replace('.xlsx', f'_temp_{attempt}.xlsx')
+            df.to_excel(temp_filepath, index=False)
+
+            # If successful, rename to target filename
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                except:
+                    pass  # Ignore removal errors
+
+            os.rename(temp_filepath, filepath)
+            print(f"Successfully saved to: {filepath}")
+            return True
+
+        except PermissionError:
+            print(f"Permission denied (attempt {attempt + 1}/{max_retries}). Retrying...")
+            time.sleep(1)
+        except Exception as e:
+            print(f"Error saving to Excel (attempt {attempt + 1}/{max_retries}): {e}")
+            time.sleep(1)
+
+    # If all retries fail, try CSV
+    try:
+        csv_path = filepath.replace('.xlsx', '.csv')
+        df.to_csv(csv_path, index=False)
+        print(f"Saved results to CSV instead: {csv_path}")
+        return True
+    except Exception as e:
+        print(f"Error saving to CSV: {e}")
+        return False
+
+
+def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=1, seed=None):
+    """Main function to process all images in a folder."""
+    output_path = os.path.dirname(output_file)
+    images_folder = os.path.join(output_path, "imagesPerThresholdLevel_ABC")
+
+    # Create directories if they don't exist
+    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(images_folder, exist_ok=True)
+
     files = [f for f in os.listdir(folder_path)
              if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))]
 
@@ -531,17 +587,14 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
     print(f"Found {len(files)} images to process.")
 
-    # Set random seed
     if seed is None:
         seed = int(time.time() * 1000) % 1000000
     np.random.seed(seed)
     random.seed(seed)
     print(f"Using random seed: {seed}")
 
-    # Initialize DE configurator
     de_configurator = DEABCConfigurator(seed=seed)
 
-    # Create tasks for parallel processing
     tasks = []
     for f in files:
         for t in threshold_levels:
@@ -550,20 +603,23 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
     print(f"Processing {len(tasks)} tasks with {n_jobs} workers...")
 
-    # Process images in parallel
-    results = Parallel(n_jobs=n_jobs, verbose=10)(
-        delayed(process_single)(*task) for task in tasks
-    )
+    if n_jobs == 1:
+        results = []
+        for i, task in enumerate(tasks):
+            print(f"Processing task {i + 1}/{len(tasks)}...")
+            result = process_single(*task)
+            results.append(result)
+    else:
+        results = Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(process_single)(*task) for task in tasks
+        )
 
-    # Filter results
     valid_results = [r for r in results if r is not None and 'error' not in r]
     error_results = [r for r in results if r is not None and 'error' in r]
 
     if valid_results:
-        # Create DataFrame
         df = pd.DataFrame(valid_results)
 
-        # Define column order
         column_order = [
             'image_name',
             'fitness_function',
@@ -578,17 +634,36 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
             'Execution Time (ms)'
         ]
 
+        # Ensure all columns exist
+        for col in column_order:
+            if col not in df.columns:
+                df[col] = None
+
         df = df[column_order]
 
-        # Save results
-        df.to_excel(output_file, index=False)
-        print(f"Results saved to {output_file}")
+        # Save the results
+        if safe_save_excel(df, output_file):
+            print(f"Results saved to {output_file}")
+        else:
+            # Last resort: print results to console
+            print("Could not save to file. Printing results:")
+            print(df.to_string())
+
         print(f"Successfully processed {len(valid_results)} configurations")
+
+        # Display summary statistics
+        print("\nSummary Statistics:")
+        numeric_columns = ['SSIM', 'PSNR', 'MSE', 'Uniformity Measure', 'fitness_value']
+        for col in numeric_columns:
+            if col in df.columns and df[col].notna().any():
+                col_data = pd.to_numeric(df[col], errors='coerce').dropna()
+                if len(col_data) > 0:
+                    print(f"{col} value range: [{col_data.min():.6f} - {col_data.max():.6f}]")
+
     else:
         print("No valid results to save")
         df = pd.DataFrame()
 
-    # Report errors
     if error_results:
         print(f"\nErrors encountered in {len(error_results)} processing tasks:")
         for error_result in error_results:
@@ -602,25 +677,37 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 # ===============================
 
 if __name__ == "__main__":
-    # Configuration
+    # Configuration with your specific paths
     folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
-    levels = [2, 3]  # Start with fewer levels for testing
+    levels = [2, 3, 4]
     output_dir = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
+
+    # Create results directory
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, "DEABC_results.xlsx")
 
-    # Process images
-    df = process_images_in_folder(folder, levels, output_file, n_jobs=1, seed=None)  # Use n_jobs=1 for debugging
+    # Use a unique filename with timestamp
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_file = os.path.join(output_dir, f"DEABC_results_{timestamp}.xlsx")
 
-    if not df.empty:
-        print("\nProcessing completed successfully!")
-        print(f"Total results: {len(df)}")
+    print(f"Input folder: {folder}")
+    print(f"Output file: {output_file}")
+    print(f"Threshold levels: {levels}")
 
-        # Verify metric ranges
-        print(f"SSIM value range: [{df['SSIM'].astype(float).min():.6f} - {df['SSIM'].astype(float).max():.6f}]")
-        print(f"PSNR value range: [{df['PSNR'].astype(float).min():.2f} - {df['PSNR'].astype(float).max():.2f}] dB")
-        print(f"MSE value range: [{df['MSE'].astype(float).min():.2f} - {df['MSE'].astype(float).max():.2f}]")
-        print(
-            f"Uniformity value range: [{df['Uniformity Measure'].astype(float).min():.6f} - {df['Uniformity Measure'].astype(float).max():.6f}]")
-    else:
-        print("Processing completed with errors!")
+    try:
+        df = process_images_in_folder(folder, levels, output_file, n_jobs=1, seed=42)
+
+        if not df.empty:
+            print("\nProcessing completed successfully!")
+            print(f"Total results: {len(df)}")
+
+            # Display final file locations
+            images_folder = os.path.join(output_dir, "imagesPerThresholdLevel_DEABC")
+            print(f"Results saved to: {output_file}")
+            print(f"Segmented images saved to: {images_folder}")
+        else:
+            print("Processing completed with errors!")
+    except Exception as e:
+        print(f"Critical error during processing: {e}")
+        import traceback
+
+        traceback.print_exc()
