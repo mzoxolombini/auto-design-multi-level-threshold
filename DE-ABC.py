@@ -355,91 +355,10 @@ class ArtificialBeeColony:
 
 
 # ===============================
-# Differential Evolution Configurator (Modified for ABC)
-# ===============================
-
-class DEABCConfigurator:
-    def __init__(self, de_pop_size=10, de_generations=10, F=0.5, CR=0.9, seed=None):
-        if seed is not None:
-            np.random.seed(seed)
-            random.seed(seed)
-        self.de_pop_size = de_pop_size
-        self.de_generations = de_generations
-        self.F = F
-        self.CR = CR
-
-    def optimize_abc_params(self, num_thresholds, image, fitness_func, seed=None):
-        """Optimize ABC parameters using Differential Evolution."""
-        if seed is not None:
-            np.random.seed(seed)
-            random.seed(seed)
-
-        hist = calculate_histogram(image)
-
-        # Parameter bounds based on literature values for ABC
-        bounds = {
-            'colony_size': (10, 50),  # SN: number of food sources
-            'max_iterations': (50, 200),  # Maximum cycles
-            'limit': (5, 50)  # Abandonment limit
-        }
-
-        population = []
-        for _ in range(self.de_pop_size):
-            individual = {
-                'colony_size': random.randint(bounds['colony_size'][0], bounds['colony_size'][1]),
-                'max_iterations': random.randint(bounds['max_iterations'][0], bounds['max_iterations'][1]),
-                'limit': random.randint(bounds['limit'][0], bounds['limit'][1])
-            }
-            population.append(individual)
-
-        fitness = []
-        for ind in population:
-            fitness.append(self.evaluate(ind, num_thresholds, hist, fitness_func, seed))
-
-        for gen in range(self.de_generations):
-            for i in range(self.de_pop_size):
-                indices = [j for j in range(self.de_pop_size) if j != i]
-                a, b, c = population[np.random.choice(indices, 3, replace=False)]
-
-                trial = {}
-                for key in population[i].keys():
-                    if random.random() < self.CR:
-                        # Integer parameters for ABC
-                        val = int(round(a[key] + self.F * (b[key] - c[key])))
-                        val = max(bounds[key][0], min(bounds[key][1], val))
-                        trial[key] = val
-                    else:
-                        trial[key] = population[i][key]
-
-                trial_fitness = self.evaluate(trial, num_thresholds, hist, fitness_func, seed)
-
-                if trial_fitness > fitness[i]:
-                    population[i] = trial
-                    fitness[i] = trial_fitness
-
-            if gen % 5 == 0:
-                best_fit = max(fitness)
-                print(f"DE Generation {gen}: Best fitness = {best_fit:.6f}")
-
-        best_index = np.argmax(fitness)
-        return population[best_index]
-
-    def evaluate(self, config, num_thresholds, hist, fitness_func, seed=None):
-        """Evaluate ABC configuration."""
-        try:
-            abc = ArtificialBeeColony(config, num_thresholds, hist, fitness_func, seed)
-            _, best_fitness = abc.evolve()
-            return best_fitness
-        except Exception as e:
-            print(f"Evaluation error: {e}")
-            return float('-inf')
-
-
-# ===============================
 # Image Processing
 # ===============================
 
-def process_single(file_name, folder_path, num_thresholds, func_name, de_configurator, seed=None, images_folder=None):
+def process_single(file_name, folder_path, num_thresholds, func_name, seed=None, images_folder=None):
     """Process a single image with given parameters."""
     try:
         run_seed = (seed + hash(file_name) + num_thresholds + hash(func_name)) % 1000000
@@ -465,9 +384,6 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
             'max_iterations': 100,  # Maximum cycles
             'limit': 10  # Abandonment limit
         }
-
-        # Uncomment to use DE optimization for ABC parameters
-        # config = de_configurator.optimize_abc_params(num_thresholds, image, fitness_function, run_seed)
 
         abc = ArtificialBeeColony(config, num_thresholds, hist, fitness_function, run_seed)
         best_thresholds, best_score = abc.evolve()
@@ -504,7 +420,7 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
             "MSE": mse_value,
             "PSNR": psnr_value,
             "Uniformity Measure": uniformity,
-            "Seed": run_seed,  # Changed from "Random Seed" to "Seed"
+            "Seed": run_seed,
             "Execution Time (ms)": execution_time_ms
         }
 
@@ -564,7 +480,9 @@ def safe_save_excel(df, filepath):
 def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=1, seed=None):
     """Main function to process all images in a folder."""
     output_path = os.path.dirname(output_file)
-    images_folder = os.path.join(output_path, "imagesPerThresholdLevel_ABC")
+
+    # images_folder is now inside the results folder
+    images_folder = os.path.join(output_path, "imagesPerThresholdLevel_DEABC")
 
     # Create directories if they don't exist
     os.makedirs(output_path, exist_ok=True)
@@ -585,32 +503,19 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
     random.seed(seed)
     print(f"Using random seed: {seed}")
 
-    de_configurator = DEABCConfigurator(seed=seed)
+    # Process images in the correct order: all threshold levels for each image-function combination
+    all_results = []
 
-    tasks = []
-    for f in files:
-        for t in threshold_levels:
-            for func in ["kapur", "otsu"]:
-                tasks.append((f, folder_path, t, func, de_configurator, seed, images_folder))
+    for file_name in files:
+        for func_name in ["kapur", "otsu"]:
+            # Process all threshold levels for this image-function combination
+            for num_thresholds in threshold_levels:
+                result = process_single(file_name, folder_path, num_thresholds, func_name, seed, images_folder)
+                if result and 'error' not in result:
+                    all_results.append(result)
 
-    print(f"Processing {len(tasks)} tasks with {n_jobs} workers...")
-
-    if n_jobs == 1:
-        results = []
-        for i, task in enumerate(tasks):
-            print(f"Processing task {i + 1}/{len(tasks)}...")
-            result = process_single(*task)
-            results.append(result)
-    else:
-        results = Parallel(n_jobs=n_jobs, verbose=10)(
-            delayed(process_single)(*task) for task in tasks
-        )
-
-    valid_results = [r for r in results if r is not None and 'error' not in r]
-    error_results = [r for r in results if r is not None and 'error' in r]
-
-    if valid_results:
-        df = pd.DataFrame(valid_results)
+    if all_results:
+        df = pd.DataFrame(all_results)
 
         # Exact column order and names as requested
         column_order = [
@@ -653,36 +558,26 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
         if 'Execution Time (ms)' in df.columns:
             df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else x)
 
+        # Sort the results to group by image and fitness function
+        df = df.sort_values(['image_name', 'fitness_function', 'thresholding_level']).reset_index(drop=True)
+
         # Save the results
         if safe_save_excel(df, output_file):
             print(f"Results saved to {output_file}")
         else:
             # Last resort: print results to console
             print("Could not save to file. Printing results:")
-            print(df.to_string())
+            print(df.to_string(index=False))
 
-        print(f"Successfully processed {len(valid_results)} configurations")
+        print(f"Successfully processed {len(all_results)} configurations")
 
         # Display summary statistics
         print("\nSummary Statistics:")
-        numeric_columns = ['fitness_value', 'SSIM', 'PSNR', 'MSE', 'Uniformity Measure']
-        for col in numeric_columns:
-            if col in df.columns and df[col].notna().any():
-                try:
-                    col_data = pd.to_numeric(df[col], errors='coerce').dropna()
-                    if len(col_data) > 0:
-                        print(f"{col} value range: [{col_data.min():.6f} - {col_data.max():.6f}]")
-                except:
-                    pass
+        print(df[['fitness_value', 'SSIM', 'PSNR', 'MSE', 'Uniformity Measure']].describe())
 
     else:
         print("No valid results to save")
         df = pd.DataFrame()
-
-    if error_results:
-        print(f"\nErrors encountered in {len(error_results)} processing tasks:")
-        for error_result in error_results:
-            print(f"  {error_result['image_name']} - {error_result['fitness_function']}: {error_result['error']}")
 
     return df
 
@@ -694,7 +589,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 if __name__ == "__main__":
     # Configuration with your specific paths
     folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
-    levels = [2, 3]
+    levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]  # You can extend this to [2, 3, 4, 5, 6, 7, 8, 9, 10]
     output_dir = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
 
     # Create results directory
@@ -722,7 +617,7 @@ if __name__ == "__main__":
 
             # Print first few rows to verify format
             print("\nFirst few rows of results:")
-            print(df.head().to_string(index=False))
+            print(df.head(10).to_string(index=False))
         else:
             print("Processing completed with errors!")
     except Exception as e:
