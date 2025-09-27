@@ -476,12 +476,56 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
         }
 
 
+def safe_save_excel(df, filepath):
+    """Safely save DataFrame to Excel with error handling."""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Close any open file handles first
+            import gc
+            gc.collect()
+
+            # Try to save with a temporary filename first
+            temp_filepath = filepath.replace('.xlsx', f'_temp_{attempt}.xlsx')
+            df.to_excel(temp_filepath, index=False)
+
+            # If successful, rename to target filename
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                except:
+                    pass  # Ignore removal errors
+
+            os.rename(temp_filepath, filepath)
+            print(f"Successfully saved to: {filepath}")
+            return True
+
+        except PermissionError:
+            print(f"Permission denied (attempt {attempt + 1}/{max_retries}). Retrying...")
+            time.sleep(1)
+        except Exception as e:
+            print(f"Error saving to Excel (attempt {attempt + 1}/{max_retries}): {e}")
+            time.sleep(1)
+
+    # If all retries fail, try CSV
+    try:
+        csv_path = filepath.replace('.xlsx', '.csv')
+        df.to_csv(csv_path, index=False)
+        print(f"Saved results to CSV instead: {csv_path}")
+        return True
+    except Exception as e:
+        print(f"Error saving to CSV: {e}")
+        return False
+
+
 def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=1, seed=None):
     """Main function to process all images in a folder."""
     output_path = os.path.dirname(output_file)
     images_folder = os.path.join(output_path, "imagesPerThresholdLevel_DEGA")
-    if not os.path.exists(images_folder):
-        os.makedirs(images_folder)
+
+    # Create directories if they don't exist
+    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(images_folder, exist_ok=True)
 
     files = [f for f in os.listdir(folder_path)
              if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))]
@@ -539,36 +583,31 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
             'Execution Time (ms)'
         ]
 
+        # Ensure all columns exist
+        for col in column_order:
+            if col not in df.columns:
+                df[col] = None
+
         df = df[column_order]
 
-        # Create a formatted version for display
-        df_display = df.copy()
-        numeric_columns = ['fitness_value', 'SSIM', 'MSE', 'PSNR', 'Uniformity Measure', 'Execution Time (ms)']
-        for col in numeric_columns:
-            if col in df_display.columns:
-                if col == 'fitness_value':
-                    df_display[col] = df_display[col].apply(lambda x: format_number(x, 8))
-                elif col == 'Execution Time (ms)':
-                    df_display[col] = df_display[col].apply(lambda x: format_number(x, 2))
-                else:
-                    df_display[col] = df_display[col].apply(lambda x: format_number(x, 7))
+        # Save the results
+        if safe_save_excel(df, output_file):
+            print(f"Results saved to {output_file}")
+        else:
+            # Last resort: print results to console
+            print("Could not save to file. Printing results:")
+            print(df.to_string())
 
-        # Save both original and formatted versions
-        df.to_excel(output_file, index=False)
-
-        formatted_output_file = output_file.replace('.xlsx', '_formatted.xlsx')
-        df_display.to_excel(formatted_output_file, index=False)
-
-        print(f"Results saved to {output_file}")
-        print(f"Formatted results saved to {formatted_output_file}")
         print(f"Successfully processed {len(valid_results)} configurations")
 
+        # Display summary statistics
         print("\nSummary Statistics:")
-        print(f"SSIM value range: [{df['SSIM'].min():.6f} - {df['SSIM'].max():.6f}]")
-        print(f"PSNR value range: [{df['PSNR'].min():.2f} - {df['PSNR'].max():.2f}] dB")
-        print(f"MSE value range: [{df['MSE'].min():.2f} - {df['MSE'].max():.2f}]")
-        print(f"Uniformity value range: [{df['Uniformity Measure'].min():.6f} - {df['Uniformity Measure'].max():.6f}]")
-        print(f"Fitness value range: [{df['fitness_value'].min():.2f} - {df['fitness_value'].max():.2f}]")
+        numeric_columns = ['SSIM', 'PSNR', 'MSE', 'Uniformity Measure', 'fitness_value']
+        for col in numeric_columns:
+            if col in df.columns and df[col].notna().any():
+                col_data = pd.to_numeric(df[col], errors='coerce').dropna()
+                if len(col_data) > 0:
+                    print(f"{col} value range: [{col_data.min():.6f} - {col_data.max():.6f}]")
 
     else:
         print("No valid results to save")
@@ -587,16 +626,37 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 # ===============================
 
 if __name__ == "__main__":
+    # Configuration with your specific paths
     folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
     levels = [2, 3, 4]
     output_dir = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
+
+    # Create results directory
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, "DEGA_results.xlsx")
 
-    df = process_images_in_folder(folder, levels, output_file, n_jobs=1, seed=42)
+    # Use a unique filename with timestamp
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_file = os.path.join(output_dir, f"DEGA_results_{timestamp}.xlsx")
 
-    if not df.empty:
-        print("\nProcessing completed successfully!")
-        print(f"Total results: {len(df)}")
-    else:
-        print("Processing completed with errors!")
+    print(f"Input folder: {folder}")
+    print(f"Output file: {output_file}")
+    print(f"Threshold levels: {levels}")
+
+    try:
+        df = process_images_in_folder(folder, levels, output_file, n_jobs=1, seed=42)
+
+        if not df.empty:
+            print("\nProcessing completed successfully!")
+            print(f"Total results: {len(df)}")
+
+            # Display final file locations
+            images_folder = os.path.join(output_dir, "imagesPerThresholdLevel_DEGA")
+            print(f"Results saved to: {output_file}")
+            print(f"Segmented images saved to: {images_folder}")
+        else:
+            print("Processing completed with errors!")
+    except Exception as e:
+        print(f"Critical error during processing: {e}")
+        import traceback
+
+        traceback.print_exc()
