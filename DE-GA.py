@@ -124,7 +124,7 @@ def calculate_psnr(original, segmented):
 
 
 def calculate_uniformity_measure(segmented, thresholds):
-    """Calculate uniformity measure based on within-class variance."""
+    """Calculate uniformity measure based on within-class variance (corrected version)."""
     if len(thresholds) == 0:
         return 0.0
 
@@ -134,42 +134,49 @@ def calculate_uniformity_measure(segmented, thresholds):
 
     sorted_thresholds = sorted(thresholds)
 
-    # Create class labels
-    class_image = np.zeros_like(segmented)
-    class_image[segmented <= sorted_thresholds[0]] = 0
-
-    for i in range(1, len(sorted_thresholds)):
-        mask = (segmented > sorted_thresholds[i - 1]) & (segmented <= sorted_thresholds[i])
-        class_image[mask] = i
-
-    class_image[segmented > sorted_thresholds[-1]] = len(sorted_thresholds)
-
-    # Calculate statistics for each class
-    class_variances = []
+    # Create class labels and calculate class means
+    class_means = []
     class_weights = []
 
-    for class_id in range(len(sorted_thresholds) + 1):
-        mask = class_image == class_id
-        pixel_count = np.sum(mask)
+    # Class 0: pixels <= first threshold
+    mask_0 = segmented <= sorted_thresholds[0]
+    if np.sum(mask_0) > 0:
+        class_means.append(np.mean(segmented[mask_0]))
+        class_weights.append(np.sum(mask_0) / total_pixels)
 
-        if pixel_count > 0:
-            class_pixels = segmented[mask]
-            class_variance = np.var(class_pixels)
-            class_variances.append(class_variance)
-            class_weights.append(pixel_count / total_pixels)
-        else:
-            class_variances.append(0)
-            class_weights.append(0)
+    # Middle classes
+    for i in range(1, len(sorted_thresholds)):
+        mask = (segmented > sorted_thresholds[i - 1]) & (segmented <= sorted_thresholds[i])
+        if np.sum(mask) > 0:
+            class_means.append(np.mean(segmented[mask]))
+            class_weights.append(np.sum(mask) / total_pixels)
 
-    # Calculate within-class variance
-    within_class_variance = sum(w * v for w, v in zip(class_weights, class_variances))
-    overall_variance = np.var(segmented)
+    # Last class: pixels > last threshold
+    mask_last = segmented > sorted_thresholds[-1]
+    if np.sum(mask_last) > 0:
+        class_means.append(np.mean(segmented[mask_last]))
+        class_weights.append(np.sum(mask_last) / total_pixels)
 
-    if overall_variance == 0:
+    if len(class_means) == 0:
+        return 0.0
+
+    # Calculate overall mean
+    overall_mean = np.mean(segmented)
+
+    # Calculate between-class variance
+    between_class_variance = 0.0
+    for mean, weight in zip(class_means, class_weights):
+        between_class_variance += weight * (mean - overall_mean) ** 2
+
+    # Calculate total variance
+    total_variance = np.var(segmented)
+
+    if total_variance == 0:
         return 1.0
 
-    # Uniformity measure: 1 - (within_class_variance / overall_variance)
-    uniformity = 1.0 - (within_class_variance / overall_variance)
+    # Uniformity measure = between_class_variance / total_variance
+    # This measures how well the thresholds separate the classes
+    uniformity = between_class_variance / total_variance
     return max(0.0, min(1.0, uniformity))
 
 
@@ -627,9 +634,9 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
 if __name__ == "__main__":
     # Configuration with your specific paths
-    folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
-    levels = [2, 3, 4]
-    output_dir = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
+    folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
+    levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
+    output_dir = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
 
     # Create results directory
     os.makedirs(output_dir, exist_ok=True)
