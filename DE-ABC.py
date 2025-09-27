@@ -588,9 +588,9 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
 if __name__ == "__main__":
     # Configuration with your specific paths
-    folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
+    folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
     levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]  # You can extend this to [2, 3, 4, 5, 6, 7, 8, 9, 10]
-    output_dir = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
+    output_dir = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
 
     # Create results directory
     os.makedirs(output_dir, exist_ok=True)
