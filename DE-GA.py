@@ -25,35 +25,25 @@ def calculate_histogram(image):
 
 
 def kapur_entropy(hist, thresholds):
-    """Calculate Kapur's entropy for multilevel thresholding (corrected)."""
+    """Calculate Kapur's entropy for multilevel thresholding."""
     if len(thresholds) == 0:
         return 0.0
 
     thresholds = sorted(thresholds)
-    bins = [0] + thresholds + [256]  # Changed from len(hist) to 256
+    bins = [0] + thresholds + [256]
     total_entropy = 0.0
 
-    # Calculate cumulative sums for efficiency
-    cumulative_hist = np.cumsum(hist)
-
     for i in range(len(bins) - 1):
-        start = bins[i]
-        end = bins[i + 1]
+        start = int(bins[i])
+        end = int(bins[i + 1])
 
-        if start >= end:  # Skip invalid ranges
+        if start >= end:
             continue
 
-        # Ensure indices are integers
-        start_idx = int(start)
-        end_idx = int(end)
-
-        class_hist = hist[start_idx:end_idx]
-        class_sum = cumulative_hist[end_idx - 1] if end_idx > 0 else 0
-        if start_idx > 0:
-            class_sum -= cumulative_hist[start_idx - 1]
+        class_hist = hist[start:end]
+        class_sum = np.sum(class_hist)
 
         if class_sum > 1e-10:
-            # Remove zero probabilities to avoid log(0)
             class_probs = class_hist / class_sum
             class_probs_nonzero = class_probs[class_probs > 1e-10]
 
@@ -65,52 +55,40 @@ def kapur_entropy(hist, thresholds):
 
 
 def otsu_between_class_variance(hist, thresholds):
-    """Calculate Otsu's between-class variance for multilevel thresholding (corrected)."""
+    """Calculate Otsu's between-class variance for multilevel thresholding."""
     if len(thresholds) == 0:
         return 0.0
 
     thresholds = sorted(thresholds)
-    bins = [0] + thresholds + [256]  # Changed from len(hist) to 256
+    bins = [0] + thresholds + [256]
 
     total_weight = np.sum(hist)
     if total_weight == 0:
         return 0.0
 
-    global_mean = np.sum(np.arange(256) * hist) / total_weight  # Fixed: use 256 instead of len(hist)
+    global_mean = np.sum(np.arange(256) * hist) / total_weight
     between_class_variance = 0.0
 
-    # Calculate cumulative sums for efficiency
-    cumulative_hist = np.cumsum(hist)
-    cumulative_mean = np.cumsum(np.arange(256) * hist)  # Fixed: use 256 instead of len(hist)
-
     for i in range(len(bins) - 1):
-        start = bins[i]
-        end = bins[i + 1]
+        start = int(bins[i])
+        end = int(bins[i + 1])
 
-        if start >= end:  # Skip invalid ranges
+        if start >= end:
             continue
 
-        # Ensure indices are integers
-        start_idx = int(start)
-        end_idx = int(end)
-
-        class_weight = cumulative_hist[end_idx - 1] if end_idx > 0 else 0
-        if start_idx > 0:
-            class_weight -= cumulative_hist[start_idx - 1]
+        class_hist = hist[start:end]
+        class_weight = np.sum(class_hist)
 
         if class_weight > 1e-10:
-            class_mean_sum = cumulative_mean[end_idx - 1] if end_idx > 0 else 0
-            if start_idx > 0:
-                class_mean_sum -= cumulative_mean[start_idx - 1]
-            class_mean = class_mean_sum / class_weight
+            intensity_values = np.arange(start, end)
+            class_mean = np.sum(intensity_values * class_hist) / class_weight
             between_class_variance += class_weight * (class_mean - global_mean) ** 2
 
     return between_class_variance / total_weight
 
 
 def calculate_ssim(original, segmented):
-    """Calculate SSIM using scikit-image (corrected)."""
-    # Ensure images have the same dimensions
+    """Calculate SSIM using scikit-image."""
     min_shape = (min(original.shape[0], segmented.shape[0]),
                  min(original.shape[1], segmented.shape[1]))
 
@@ -119,14 +97,12 @@ def calculate_ssim(original, segmented):
     if segmented.shape != min_shape:
         segmented = cv2.resize(segmented, min_shape[::-1])
 
-    # Use data_range=255 for 8-bit images
     data_range = 255 if original.max() > 1.0 else 1.0
     return ssim_skimage(original, segmented, data_range=data_range)
 
 
 def calculate_mse(original, segmented):
     """Calculate Mean Squared Error."""
-    # Ensure images have the same dimensions
     min_shape = (min(original.shape[0], segmented.shape[0]),
                  min(original.shape[1], segmented.shape[1]))
 
@@ -139,97 +115,80 @@ def calculate_mse(original, segmented):
 
 
 def calculate_psnr(original, segmented):
-    """Calculate PSNR (corrected formula)."""
+    """Calculate PSNR."""
     mse = calculate_mse(original, segmented)
     if mse == 0:
         return float('inf')
     max_pixel = 255.0
-    return 10 * math.log10((max_pixel ** 2) / mse)  # Corrected formula
+    return 10 * math.log10((max_pixel ** 2) / mse)
 
 
 def calculate_uniformity_measure(segmented, thresholds):
-    """Calculate uniformity measure (corrected)."""
+    """Calculate uniformity measure based on within-class variance."""
     if len(thresholds) == 0:
         return 0.0
 
-    uniformity = 0.0
     total_pixels = segmented.size
     if total_pixels == 0:
         return 0.0
 
     sorted_thresholds = sorted(thresholds)
 
-    # Create intensity classes based on thresholds
-    intensity_levels = len(sorted_thresholds) + 1
-    class_means = []
-    class_pixels = []
+    # Create class labels
+    class_image = np.zeros_like(segmented)
+    class_image[segmented <= sorted_thresholds[0]] = 0
+
+    for i in range(1, len(sorted_thresholds)):
+        mask = (segmented > sorted_thresholds[i - 1]) & (segmented <= sorted_thresholds[i])
+        class_image[mask] = i
+
+    class_image[segmented > sorted_thresholds[-1]] = len(sorted_thresholds)
 
     # Calculate statistics for each class
-    for i in range(intensity_levels):
-        if i == 0:
-            mask = segmented <= sorted_thresholds[0] if len(sorted_thresholds) > 0 else segmented <= 0
-        elif i == len(sorted_thresholds):
-            mask = segmented > sorted_thresholds[-1]
-        else:
-            mask = (segmented > sorted_thresholds[i - 1]) & (segmented <= sorted_thresholds[i])
+    class_variances = []
+    class_weights = []
 
-        class_pixel_count = np.sum(mask)
-        class_pixels.append(class_pixel_count)
+    for class_id in range(len(sorted_thresholds) + 1):
+        mask = class_image == class_id
+        pixel_count = np.sum(mask)
 
-        if class_pixel_count > 0:
-            class_mean = np.mean(segmented[mask])
-            class_means.append(class_mean)
-        else:
-            class_means.append(0.0)
-
-    # Calculate uniformity based on variance within classes
-    total_uniformity = 0.0
-    for i, pixel_count in enumerate(class_pixels):
         if pixel_count > 0:
-            if i == 0:
-                class_range = sorted_thresholds[0] if len(sorted_thresholds) > 0 else 1
-            elif i == len(sorted_thresholds):
-                class_range = 255 - sorted_thresholds[-1]
-            else:
-                class_range = sorted_thresholds[i] - sorted_thresholds[i - 1]
+            class_pixels = segmented[mask]
+            class_variance = np.var(class_pixels)
+            class_variances.append(class_variance)
+            class_weights.append(pixel_count / total_pixels)
+        else:
+            class_variances.append(0)
+            class_weights.append(0)
 
-            if class_range > 0:
-                # Calculate variance for this class
-                if i == 0:
-                    mask = segmented <= sorted_thresholds[0] if len(sorted_thresholds) > 0 else segmented <= 0
-                elif i == len(sorted_thresholds):
-                    mask = segmented > sorted_thresholds[-1]
-                else:
-                    mask = (segmented > sorted_thresholds[i - 1]) & (segmented <= sorted_thresholds[i])
+    # Calculate within-class variance
+    within_class_variance = sum(w * v for w, v in zip(class_weights, class_variances))
+    overall_variance = np.var(segmented)
 
-                variance = np.var(segmented[mask]) if np.sum(mask) > 0 else 0
-                class_uniformity = 1 - (variance / (class_range ** 2)) if class_range > 0 else 0
-                class_uniformity = max(0, min(1, class_uniformity))  # Clip to [0,1]
-                total_uniformity += class_uniformity * (pixel_count / total_pixels)
+    if overall_variance == 0:
+        return 1.0
 
-    return total_uniformity
+    # Uniformity measure: 1 - (within_class_variance / overall_variance)
+    uniformity = 1.0 - (within_class_variance / overall_variance)
+    return max(0.0, min(1.0, uniformity))
 
 
 def apply_thresholds(image, thresholds):
-    """Apply multiple thresholds to segment an image (corrected)."""
+    """Apply multiple thresholds to segment an image."""
     if len(thresholds) == 0:
         return np.zeros_like(image)
 
     thresholds = sorted(thresholds)
     segmented = np.zeros_like(image, dtype=np.uint8)
 
-    # First class: values <= first threshold
     segmented[image <= thresholds[0]] = 0
 
-    # Middle classes
     for i in range(1, len(thresholds)):
         mask = (image > thresholds[i - 1]) & (image <= thresholds[i])
         segmented[mask] = i
 
-    # Last class: values > last threshold
     segmented[image > thresholds[-1]] = len(thresholds)
 
-    # Normalize to 0-255 for better visualization
     max_class = len(thresholds)
     if max_class > 0:
         segmented = (segmented * (255 // max_class)).astype(np.uint8)
@@ -243,12 +202,13 @@ def format_number(value, decimals=8):
         return str(value)
     if np.isinf(value):
         return "Infinity"
-    fmt = f"{value:.{decimals}f}"
-    return fmt.replace('.', ',')
+    if np.isnan(value):
+        return "NaN"
+    return f"{value:.{decimals}f}"
 
 
 # ===============================
-# Genetic Algorithm with Elitism (Corrected)
+# Genetic Algorithm with Elitism
 # ===============================
 
 class GeneticAlgorithm:
@@ -265,11 +225,9 @@ class GeneticAlgorithm:
         self.hist = hist
         self.fitness_func = fitness_func
 
-        # Fitness cache to avoid duplicate evaluations
         self.fitness_cache = {}
-
-        # Initialize population with unique thresholds
         self.population = []
+
         for _ in range(self.pop_size):
             individual = np.sort(np.random.choice(range(1, 255), num_thresholds, replace=False))
             self.population.append(individual)
@@ -282,8 +240,9 @@ class GeneticAlgorithm:
         if key not in self.fitness_cache:
             try:
                 self.fitness_cache[key] = self.fitness_func(self.hist, individual)
-            except:
-                self.fitness_cache[key] = float('-inf')  # Invalid solution
+            except Exception as e:
+                print(f"Fitness evaluation error: {e}")
+                self.fitness_cache[key] = float('-inf')
         return self.fitness_cache[key]
 
     def select_parent(self):
@@ -305,7 +264,6 @@ class GeneticAlgorithm:
         mutated = individual.copy()
         for i in range(self.num_thresholds):
             if np.random.rand() < self.mutation_rate:
-                # Mutate within valid range, ensuring uniqueness
                 new_val = np.random.randint(1, 255)
                 while new_val in mutated:
                     new_val = np.random.randint(1, 255)
@@ -319,7 +277,6 @@ class GeneticAlgorithm:
         best_fitness = self.fitness_values[best_idx]
 
         for generation in range(self.max_generations):
-            # Create new offspring
             offspring = []
             offspring_fitness = []
 
@@ -334,22 +291,18 @@ class GeneticAlgorithm:
                 offspring.extend([child1, child2])
                 offspring_fitness.extend([self.evaluate(child1), self.evaluate(child2)])
 
-            # Combine population and offspring
             combined_pop = self.population + offspring
             combined_fitness = self.fitness_values + offspring_fitness
 
-            # Select best individuals for next generation
             indices = np.argsort(combined_fitness)[-self.pop_size:]
             self.population = [combined_pop[i] for i in indices]
             self.fitness_values = [combined_fitness[i] for i in indices]
 
-            # Update best solution
             current_best_idx = np.argmax(self.fitness_values)
             if self.fitness_values[current_best_idx] > best_fitness:
                 best_fitness = self.fitness_values[current_best_idx]
                 best_individual = self.population[current_best_idx].copy()
 
-            # Print progress every 10 generations
             if generation % 10 == 0:
                 print(f"GA Generation {generation}: Best fitness = {best_fitness:.6f}")
 
@@ -357,11 +310,11 @@ class GeneticAlgorithm:
 
 
 # ===============================
-# Differential Evolution Configurator (Corrected)
+# Differential Evolution Configurator
 # ===============================
 
 class DEGAConfigurator:
-    def __init__(self, de_pop_size=20, de_generations=20, F=0.5, CR=0.9, seed=None):
+    def __init__(self, de_pop_size=10, de_generations=10, F=0.5, CR=0.9, seed=None):
         if seed is not None:
             np.random.seed(seed)
             random.seed(seed)
@@ -378,15 +331,13 @@ class DEGAConfigurator:
 
         hist = calculate_histogram(image)
 
-        # Parameter bounds
         bounds = {
-            'pop_size': (20, 100),
-            'max_generations': (50, 200),
+            'pop_size': (10, 50),
+            'max_generations': (10, 50),
             'crossover_rate': (0.6, 0.95),
             'mutation_rate': (0.01, 0.3)
         }
 
-        # Initialize population
         population = []
         for _ in range(self.de_pop_size):
             individual = {
@@ -397,47 +348,38 @@ class DEGAConfigurator:
             }
             population.append(individual)
 
-        # Evaluate initial population
-        fitness = [self.evaluate(ind, num_thresholds, hist, fitness_func, seed)
-                   for ind in population]
+        fitness = []
+        for ind in population:
+            fitness.append(self.evaluate(ind, num_thresholds, hist, fitness_func, seed))
 
-        # Differential Evolution optimization
         for gen in range(self.de_generations):
             for i in range(self.de_pop_size):
-                # Select three distinct individuals
                 indices = [j for j in range(self.de_pop_size) if j != i]
                 a, b, c = population[np.random.choice(indices, 3, replace=False)]
 
-                # Create trial individual
                 trial = {}
                 for key in population[i].keys():
                     if random.random() < self.CR:
                         if key in ['pop_size', 'max_generations']:
-                            # Integer parameters
                             val = int(round(a[key] + self.F * (b[key] - c[key])))
                             val = max(bounds[key][0], min(bounds[key][1], val))
                         else:
-                            # Continuous parameters
                             val = a[key] + self.F * (b[key] - c[key])
                             val = max(bounds[key][0], min(bounds[key][1], val))
                         trial[key] = val
                     else:
                         trial[key] = population[i][key]
 
-                # Evaluate trial
                 trial_fitness = self.evaluate(trial, num_thresholds, hist, fitness_func, seed)
 
-                # Selection
                 if trial_fitness > fitness[i]:
                     population[i] = trial
                     fitness[i] = trial_fitness
 
-            # Print progress
             if gen % 5 == 0:
                 best_fit = max(fitness)
                 print(f"DE Generation {gen}: Best fitness = {best_fit:.6f}")
 
-        # Return best individual
         best_index = np.argmax(fitness)
         return population[best_index]
 
@@ -453,21 +395,18 @@ class DEGAConfigurator:
 
 
 # ===============================
-# Corrected Image Processing
+# Image Processing
 # ===============================
 
 def process_single(file_name, folder_path, num_thresholds, func_name, de_configurator, seed=None, images_folder=None):
     """Process a single image with given parameters."""
     try:
-        # Generate unique seed for this run
         run_seed = (seed + hash(file_name) + num_thresholds + hash(func_name)) % 1000000
         np.random.seed(run_seed)
         random.seed(run_seed)
 
-        # Start timing
         start_time = time.time()
 
-        # Load image
         image_path = os.path.join(folder_path, file_name)
         image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         if image is None:
@@ -476,23 +415,25 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
 
         print(f"[START] Processing {file_name} | {func_name} | thresholds={num_thresholds}")
 
-        # Calculate histogram
         hist = calculate_histogram(image)
-
-        # Select fitness function
         fitness_function = kapur_entropy if func_name == "kapur" else otsu_between_class_variance
 
-        # Optimize GA parameters using DE
-        optimal_config = de_configurator.optimize_ga_params(num_thresholds, image, fitness_function, run_seed)
+        # Use optimized parameters or default
+        config = {
+            'pop_size': 20,
+            'max_generations': 30,
+            'crossover_rate': 0.8,
+            'mutation_rate': 0.1
+        }
 
-        # Run GA with optimized parameters
-        ga = GeneticAlgorithm(optimal_config, num_thresholds, hist, fitness_function, run_seed)
+        # Uncomment to use DE optimization
+        # config = de_configurator.optimize_ga_params(num_thresholds, image, fitness_function, run_seed)
+
+        ga = GeneticAlgorithm(config, num_thresholds, hist, fitness_function, run_seed)
         best_thresholds, best_score = ga.evolve()
 
-        # Calculate execution time
         execution_time_ms = (time.time() - start_time) * 1000
 
-        # Apply thresholds and calculate metrics
         segmented_image = apply_thresholds(image, best_thresholds)
 
         ssim_value = calculate_ssim(image, segmented_image)
@@ -501,7 +442,6 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
         uniformity = calculate_uniformity_measure(segmented_image, best_thresholds)
         threshold_value_str = "[" + ", ".join(map(str, best_thresholds)) + "]"
 
-        # Save segmented image
         if images_folder:
             image_name_base = os.path.splitext(file_name)[0]
             output_filename = f"{image_name_base}_{func_name}_{num_thresholds}_thresholds.png"
@@ -516,17 +456,19 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
             "fitness_function": func_name.capitalize(),
             "thresholding_level": num_thresholds,
             "threshold_value": threshold_value_str,
-            "fitness_value": format_number(best_score, 8),
-            "SSIM": format_number(ssim_value, 7),
-            "MSE": format_number(mse_value, 7),
-            "PSNR": format_number(psnr_value, 7),
-            "Uniformity Measure": format_number(uniformity, 7),
+            "fitness_value": best_score,
+            "SSIM": ssim_value,
+            "MSE": mse_value,
+            "PSNR": psnr_value,
+            "Uniformity Measure": uniformity,
             "Random Seed": run_seed,
-            "Execution Time (ms)": format_number(execution_time_ms, 2)
+            "Execution Time (ms)": execution_time_ms
         }
 
     except Exception as e:
         print(f"[ERROR] Processing {file_name} | {func_name}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {
             "image_name": file_name,
             "fitness_function": func_name,
@@ -534,15 +476,13 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
         }
 
 
-def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=-1, seed=None):
+def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=1, seed=None):
     """Main function to process all images in a folder."""
-    # Create output directories
     output_path = os.path.dirname(output_file)
     images_folder = os.path.join(output_path, "imagesPerThresholdLevel_DEGA")
     if not os.path.exists(images_folder):
         os.makedirs(images_folder)
 
-    # Get image files
     files = [f for f in os.listdir(folder_path)
              if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))]
 
@@ -552,17 +492,14 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
     print(f"Found {len(files)} images to process.")
 
-    # Set random seed
     if seed is None:
         seed = int(time.time() * 1000) % 1000000
     np.random.seed(seed)
     random.seed(seed)
     print(f"Using random seed: {seed}")
 
-    # Initialize DE configurator
     de_configurator = DEGAConfigurator(seed=seed)
 
-    # Create tasks for parallel processing
     tasks = []
     for f in files:
         for t in threshold_levels:
@@ -571,20 +508,23 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
     print(f"Processing {len(tasks)} tasks with {n_jobs} workers...")
 
-    # Process images in parallel
-    results = Parallel(n_jobs=n_jobs, verbose=10)(
-        delayed(process_single)(*task) for task in tasks
-    )
+    if n_jobs == 1:
+        results = []
+        for i, task in enumerate(tasks):
+            print(f"Processing task {i + 1}/{len(tasks)}...")
+            result = process_single(*task)
+            results.append(result)
+    else:
+        results = Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(process_single)(*task) for task in tasks
+        )
 
-    # Filter results
     valid_results = [r for r in results if r is not None and 'error' not in r]
     error_results = [r for r in results if r is not None and 'error' in r]
 
     if valid_results:
-        # Create DataFrame
         df = pd.DataFrame(valid_results)
 
-        # Define column order
         column_order = [
             'image_name',
             'fitness_function',
@@ -601,15 +541,39 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
         df = df[column_order]
 
-        # Save results
+        # Create a formatted version for display
+        df_display = df.copy()
+        numeric_columns = ['fitness_value', 'SSIM', 'MSE', 'PSNR', 'Uniformity Measure', 'Execution Time (ms)']
+        for col in numeric_columns:
+            if col in df_display.columns:
+                if col == 'fitness_value':
+                    df_display[col] = df_display[col].apply(lambda x: format_number(x, 8))
+                elif col == 'Execution Time (ms)':
+                    df_display[col] = df_display[col].apply(lambda x: format_number(x, 2))
+                else:
+                    df_display[col] = df_display[col].apply(lambda x: format_number(x, 7))
+
+        # Save both original and formatted versions
         df.to_excel(output_file, index=False)
+
+        formatted_output_file = output_file.replace('.xlsx', '_formatted.xlsx')
+        df_display.to_excel(formatted_output_file, index=False)
+
         print(f"Results saved to {output_file}")
+        print(f"Formatted results saved to {formatted_output_file}")
         print(f"Successfully processed {len(valid_results)} configurations")
+
+        print("\nSummary Statistics:")
+        print(f"SSIM value range: [{df['SSIM'].min():.6f} - {df['SSIM'].max():.6f}]")
+        print(f"PSNR value range: [{df['PSNR'].min():.2f} - {df['PSNR'].max():.2f}] dB")
+        print(f"MSE value range: [{df['MSE'].min():.2f} - {df['MSE'].max():.2f}]")
+        print(f"Uniformity value range: [{df['Uniformity Measure'].min():.6f} - {df['Uniformity Measure'].max():.6f}]")
+        print(f"Fitness value range: [{df['fitness_value'].min():.2f} - {df['fitness_value'].max():.2f}]")
+
     else:
         print("No valid results to save")
         df = pd.DataFrame()
 
-    # Report errors
     if error_results:
         print(f"\nErrors encountered in {len(error_results)} processing tasks:")
         for error_result in error_results:
@@ -623,25 +587,16 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 # ===============================
 
 if __name__ == "__main__":
-    # Configuration
     folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
-    levels = [2, 3, 4]  # Reduced for testing, can expand to [2, 3, 4, 5, 6, 7, 8, 9, 10]
+    levels = [2, 3, 4]
     output_dir = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, "DEGA_results.xlsx")
 
-    # Process images
-    df = process_images_in_folder(folder, levels, output_file, n_jobs=-1, seed=None)
+    df = process_images_in_folder(folder, levels, output_file, n_jobs=1, seed=42)
 
     if not df.empty:
         print("\nProcessing completed successfully!")
         print(f"Total results: {len(df)}")
-
-        # Verify metric ranges
-        print(f"SSIM value range: [{df['SSIM'].astype(float).min():.6f} - {df['SSIM'].astype(float).max():.6f}]")
-        print(f"PSNR value range: [{df['PSNR'].astype(float).min():.2f} - {df['PSNR'].astype(float).max():.2f}] dB")
-        print(f"MSE value range: [{df['MSE'].astype(float).min():.2f} - {df['MSE'].astype(float).max():.2f}]")
-        print(
-            f"Uniformity value range: [{df['Uniformity Measure'].astype(float).min():.6f} - {df['Uniformity Measure'].astype(float).max():.6f}]")
     else:
         print("Processing completed with errors!")
