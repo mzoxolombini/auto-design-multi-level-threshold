@@ -172,7 +172,7 @@ def format_number(value, decimals=8):
     if np.isinf(value):
         return "Infinity"
     fmt = f"{value:.{decimals}f}"
-    return fmt.replace('.', ',')
+    return fmt  # Keep dots for decimal separator
 
 
 # ----------------- Fixed Pure ABC Algorithm -----------------
@@ -428,102 +428,10 @@ class PureArtificialBeeColony:
             return sol.copy()
 
 
-# ----------------- Simplified GA for ABC Configuration -----------------
-
-class GAforABC:
-    def __init__(self, ga_config, hist, fitness_function, num_thresholds, seed=None):
-        self.ga_config = ga_config
-        self.hist = hist
-        self.fitness_function = fitness_function
-        self.num_thresholds = num_thresholds
-        self.rng = random.Random(seed)
-        self.np_rng = np.random.RandomState(seed)
-
-        self.population = [
-            [self.rng.randint(10, 30),  # Smaller population
-             self.rng.uniform(0.3, 0.7),  # mutation_factor
-             self.rng.uniform(0.2, 0.4)]  # limit_ratio
-            for _ in range(max(2, ga_config['pop_size']))
-        ]
-
-    def fitness(self, chromosome):
-        """Evaluate fitness of a GA chromosome."""
-        pop_size, mutation_factor, limit_ratio = chromosome
-        abc_config = {
-            'pop_size': max(5, int(pop_size)),
-            'max_generations': 10,  # Very small for speed
-            'mutation_factor': max(0.1, min(1.0, mutation_factor)),
-            'limit_ratio': max(0.1, min(0.5, limit_ratio))
-        }
-
-        try:
-            abc = PureArtificialBeeColony(abc_config, self.num_thresholds, self.hist,
-                                          self.fitness_function, self.rng.randint(0, 1000000))
-            _, best_fitness = abc.evolve()
-            return best_fitness if not np.isnan(best_fitness) else float('-inf')
-        except Exception as e:
-            return float('-inf')
-
-    def evolve(self):
-        """Run GA evolution to find best ABC parameters."""
-        best_chromosome = None
-        best_score = float('-inf')
-
-        for generation in range(self.ga_config['max_generations']):
-            scores = []
-            for ind in self.population:
-                score = self.fitness(ind)
-                scores.append(score)
-
-            # Filter out invalid scores
-            valid_indices = [i for i, score in enumerate(scores) if score > float('-inf')]
-            if not valid_indices:
-                print("No valid solutions in GA population, resetting...")
-                self.population = [
-                    [self.rng.randint(10, 30), self.rng.uniform(0.3, 0.7), self.rng.uniform(0.2, 0.4)]
-                    for _ in range(len(self.population))
-                ]
-                continue
-
-            valid_population = [self.population[i] for i in valid_indices]
-            valid_scores = [scores[i] for i in valid_indices]
-
-            ranked = sorted(zip(valid_population, valid_scores), key=lambda x: x[1], reverse=True)
-            self.population = [x[0] for x in ranked]
-            scores_sorted = [x[1] for x in ranked]
-
-            # Fill remaining population with new individuals if needed
-            while len(self.population) < self.ga_config['pop_size']:
-                self.population.append([
-                    self.rng.randint(10, 30),
-                    self.rng.uniform(0.3, 0.7),
-                    self.rng.uniform(0.2, 0.4)
-                ])
-
-            if scores_sorted and scores_sorted[0] > best_score:
-                best_chromosome = self.population[0].copy()
-                best_score = scores_sorted[0]
-                print(f"GA Generation {generation}: Best score = {best_score:.6f}")
-
-            # Simple mutation for next generation
-            new_population = self.population[:max(1, len(self.population) // 2)]
-            while len(new_population) < self.ga_config['pop_size']:
-                parent = self.rng.choice(new_population)
-                child = [
-                    max(5, parent[0] + self.rng.randint(-2, 3)),
-                    max(0.1, min(1.0, parent[1] + self.rng.uniform(-0.1, 0.1))),
-                    max(0.1, min(0.5, parent[2] + self.rng.uniform(-0.05, 0.05)))
-                ]
-                new_population.append(child)
-
-            self.population = new_population
-
-        return best_chromosome, best_score
-
-
 # ----------------- Worker Function -----------------
 
-def process_single(filename, folder_path, num_thresholds, fitness_function, abc_config, random_seed, images_folder):
+def process_single(filename, folder_path, num_thresholds, fitness_function, abc_config, random_seed, images_folder,
+                   base_seed):
     """Process a single image with given parameters."""
     filepath = os.path.join(folder_path, filename)
     print(f"[START] {filename} | {fitness_function} | thresholds={num_thresholds}")
@@ -534,8 +442,10 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
         print(f"[SKIP] Could not load {filename}")
         return None
 
-    # Generate unique seed
-    run_seed = (random_seed + hash(filename) + num_thresholds) % 1000000
+    # Generate consistent seed based on image name, fitness function, and threshold level
+    # This ensures same seed for same combination across runs
+    seed_str = f"{filename}_{fitness_function}_{num_thresholds}_{base_seed}"
+    run_seed = hash(seed_str) % 1000000
     random.seed(run_seed)
     np.random.seed(run_seed)
 
@@ -581,6 +491,7 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
         uniformity_value = 0.0
         seg_img = np.zeros_like(image)
 
+    # Format threshold values exactly as requested
     threshold_str = f"[{', '.join(map(str, sorted(best_solution)))}]"
 
     print(f"[DONE] {filename} | {fitness_function} | thresholds={num_thresholds} | "
@@ -597,15 +508,15 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
 
     return {
         'image_name': filename,
-        'fitness_function': fitness_function.capitalize(),
+        'fitness_function': fitness_function,  # Keep lowercase
         'thresholding_level': num_thresholds,
         'threshold_value': threshold_str,
-        'fitness_value': format_number(best_fitness, 4),
-        'SSIM': format_number(ssim_value, 4),
-        'MSE': format_number(mse, 4),
-        'PSNR': format_number(psnr, 4),
-        'Uniformity Measure': format_number(uniformity_value, 4),
-        'Random Seed': run_seed,
+        'fitness_value': format_number(best_fitness, 8),
+        'SSIM': format_number(ssim_value, 6),
+        'MSE': format_number(mse, 2),
+        'PSNR': format_number(psnr, 2),
+        'Uniformity Measure': format_number(uniformity_value, 6),
+        'Seed': run_seed,
         'Execution Time (ms)': format_number(execution_time_ms, 2)
     }
 
@@ -637,12 +548,14 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
 
     print("Using default ABC configuration:", abc_config)
 
-    # Create tasks
+    # Create tasks in the specific order: image1-kapur-all_levels, image1-otsu-all_levels, image2-kapur-all_levels, etc.
     tasks = []
+    base_seed = 42  # Fixed base seed for reproducibility
+
     for f in files:
-        for t in threshold_levels:
-            for func in ["kapur", "otsu"]:
-                tasks.append((f, folder_path, t, func, abc_config, 42, images_folder))  # Fixed seed for reproducibility
+        for func in ["kapur", "otsu"]:  # Process kapur first for each image, then otsu
+            for t in threshold_levels:
+                tasks.append((f, folder_path, t, func, abc_config, 42, images_folder, base_seed))
 
     print(f"Processing {len(tasks)} tasks sequentially...")
 
@@ -651,36 +564,84 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
     for i, task in enumerate(tasks):
         try:
             result = process_single(*task)
-            results.append(result)
+            if result is not None:
+                results.append(result)
             print(f"Progress: {i + 1}/{len(tasks)}")
         except Exception as e:
             print(f"Task {i + 1} failed: {e}")
-            results.append(None)
-
-    results = [r for r in results if r is not None]
+            # Continue with next task
 
     if not results:
         print("No results obtained.")
         return None
 
-    # Create and save results
+    # Create DataFrame
     df = pd.DataFrame(results)
 
+    # Use exact column names as requested
     column_order = [
         'image_name', 'fitness_function', 'thresholding_level', 'threshold_value',
         'fitness_value', 'SSIM', 'MSE', 'PSNR', 'Uniformity Measure',
-        'Random Seed', 'Execution Time (ms)'
+        'Seed', 'Execution Time (ms)'
     ]
 
     df = df[column_order]
+
+    # Create a custom sorting key for fitness_function to ensure "kapur" comes before "otsu"
+    def fitness_function_order(func):
+        return 0 if func == "kapur" else 1
+
+    # Sort the results to match your desired order:
+    # 1. First by image name
+    # 2. Then by fitness function (kapur first, then otsu) using custom order
+    # 3. Then by thresholding level (ascending)
+    df_sorted = df.copy()
+    df_sorted['fitness_order'] = df_sorted['fitness_function'].apply(fitness_function_order)
+    df_sorted = df_sorted.sort_values(['image_name', 'fitness_order', 'thresholding_level'])
+    df_sorted = df_sorted.drop('fitness_order', axis=1)
+    df_sorted = df_sorted.reset_index(drop=True)
+
+    # Save to Excel
     os.makedirs(output_path, exist_ok=True)
     output_file = os.path.join(output_path, "GAABC_results.xlsx")
-    df.to_excel(output_file, index=False)
 
-    print(f"Results saved to {output_file}")
+    # Create Excel writer with formatting options
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        df_sorted.to_excel(writer, sheet_name='Results', index=False)
+
+        # Auto-adjust column widths
+        worksheet = writer.sheets['Results']
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            worksheet.column_dimensions[column_letter].width = adjusted_width
+
+    # Also save as CSV for easy viewing
+    csv_file = os.path.join(output_path, "GAABC_results.csv")
+    df_sorted.to_csv(csv_file, index=False, sep='\t')  # Tab-separated
+
+    print(f"Results saved to {output_file} and {csv_file}")
     print(f"Processed {len(results)} image configurations")
 
-    return df
+    # Print the results in the exact format for verification
+    print("\nResults preview (first 12 rows):")
+    print("-" * 120)
+    print(
+        f"{'image_name':<15} {'fitness_function':<15} {'thresholding_level':<18} {'threshold_value':<15} {'fitness_value':<15} {'SSIM':<10} {'MSE':<10} {'PSNR':<8} {'Uniformity Measure':<18} {'Seed':<10} {'Execution Time (ms)':<15}")
+    print("-" * 120)
+
+    for i, row in df_sorted.head(12).iterrows():
+        print(
+            f"{row['image_name']:<15} {row['fitness_function']:<15} {row['thresholding_level']:<18} {row['threshold_value']:<15} {row['fitness_value']:<15} {row['SSIM']:<10} {row['MSE']:<10} {row['PSNR']:<8} {row['Uniformity Measure']:<18} {row['Seed']:<10} {row['Execution Time (ms)']:<15}")
+
+    return df_sorted
 
 
 # ----------------- Main Execution -----------------
@@ -688,12 +649,19 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
 if __name__ == "__main__":
     folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
     output = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
-    levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
+    levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]  # Added level 4 to match your example
 
     df = process_images_in_folder(folder, levels, output, n_jobs=1)
 
     if df is not None:
         print("\nProcessing completed successfully!")
         print(f"Total results: {len(df)}")
+
+        # Show grouping by image and fitness function
+        print("\nGrouping structure:")
+        grouped = df.groupby(['image_name', 'fitness_function']).size()
+        for (image, func), count in grouped.items():
+            print(f"{image} - {func}: {count} threshold levels")
+
     else:
         print("Processing failed!")
