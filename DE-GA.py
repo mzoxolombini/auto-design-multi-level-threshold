@@ -30,7 +30,7 @@ def kapur_entropy(hist, thresholds):
         return 0.0
 
     thresholds = sorted(thresholds)
-    bins = [0] + thresholds + [len(hist)]
+    bins = [0] + thresholds + [256]  # Changed from len(hist) to 256
     total_entropy = 0.0
 
     # Calculate cumulative sums for efficiency
@@ -43,8 +43,14 @@ def kapur_entropy(hist, thresholds):
         if start >= end:  # Skip invalid ranges
             continue
 
-        class_hist = hist[start:end]
-        class_sum = cumulative_hist[end - 1] - (cumulative_hist[start - 1] if start > 0 else 0)
+        # Ensure indices are integers
+        start_idx = int(start)
+        end_idx = int(end)
+
+        class_hist = hist[start_idx:end_idx]
+        class_sum = cumulative_hist[end_idx - 1] if end_idx > 0 else 0
+        if start_idx > 0:
+            class_sum -= cumulative_hist[start_idx - 1]
 
         if class_sum > 1e-10:
             # Remove zero probabilities to avoid log(0)
@@ -64,18 +70,18 @@ def otsu_between_class_variance(hist, thresholds):
         return 0.0
 
     thresholds = sorted(thresholds)
-    bins = [0] + thresholds + [len(hist)]
+    bins = [0] + thresholds + [256]  # Changed from len(hist) to 256
 
     total_weight = np.sum(hist)
     if total_weight == 0:
         return 0.0
 
-    global_mean = np.sum(np.arange(len(hist)) * hist) / total_weight
+    global_mean = np.sum(np.arange(256) * hist) / total_weight  # Fixed: use 256 instead of len(hist)
     between_class_variance = 0.0
 
     # Calculate cumulative sums for efficiency
     cumulative_hist = np.cumsum(hist)
-    cumulative_mean = np.cumsum(np.arange(len(hist)) * hist)
+    cumulative_mean = np.cumsum(np.arange(256) * hist)  # Fixed: use 256 instead of len(hist)
 
     for i in range(len(bins) - 1):
         start = bins[i]
@@ -84,10 +90,18 @@ def otsu_between_class_variance(hist, thresholds):
         if start >= end:  # Skip invalid ranges
             continue
 
-        class_weight = cumulative_hist[end - 1] - (cumulative_hist[start - 1] if start > 0 else 0)
+        # Ensure indices are integers
+        start_idx = int(start)
+        end_idx = int(end)
+
+        class_weight = cumulative_hist[end_idx - 1] if end_idx > 0 else 0
+        if start_idx > 0:
+            class_weight -= cumulative_hist[start_idx - 1]
 
         if class_weight > 1e-10:
-            class_mean_sum = cumulative_mean[end - 1] - (cumulative_mean[start - 1] if start > 0 else 0)
+            class_mean_sum = cumulative_mean[end_idx - 1] if end_idx > 0 else 0
+            if start_idx > 0:
+                class_mean_sum -= cumulative_mean[start_idx - 1]
             class_mean = class_mean_sum / class_weight
             between_class_variance += class_weight * (class_mean - global_mean) ** 2
 
