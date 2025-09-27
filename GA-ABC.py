@@ -183,10 +183,13 @@ class PureArtificialBeeColony:
         self.fitness_function = fitness_function
         self.rng = random.Random(seed)
         self.np_rng = np.random.RandomState(seed)
+
+        # Ensure population size is at least 2 for candidate generation
+        pop_size = max(2, config['pop_size'])
         self.population = [sorted(self.rng.sample(range(1, 255), num_thresholds))
-                           for _ in range(config['pop_size'])]
-        self.trials = [0] * config['pop_size']
-        self.limit = int(config['pop_size'] * config['limit_ratio'])
+                           for _ in range(pop_size)]
+        self.trials = [0] * pop_size
+        self.limit = int(pop_size * config['limit_ratio'])
         self.best_solution, self.best_fitness = None, float('-inf')
 
     def fitness(self, ind):
@@ -252,10 +255,21 @@ class PureArtificialBeeColony:
     def candidate(self, sol, idx):
         """Generate a candidate solution."""
         cand = sol.copy()
-        d = self.rng.randint(0, len(cand))
-        k = self.rng.choice([j for j in range(len(self.population)) if j != idx])
-        phi = self.rng.uniform(-1, 1) * self.config['mutation_factor']
-        cand[d] = int(np.clip(sol[d] + phi * (sol[d] - self.population[k][d]), 1, 254))
+
+        # Ensure there are other individuals to choose from
+        if len(self.population) <= 1:
+            # If only one individual, create a random modification
+            d = self.rng.randint(0, len(cand))
+            phi = self.rng.uniform(-1, 1) * self.config['mutation_factor']
+            cand[d] = int(np.clip(sol[d] + phi * sol[d], 1, 254))
+        else:
+            # Normal case with multiple individuals
+            d = self.rng.randint(0, len(cand))
+            # Choose k different from idx
+            k = self.rng.choice([j for j in range(len(self.population)) if j != idx])
+            phi = self.rng.uniform(-1, 1) * self.config['mutation_factor']
+            cand[d] = int(np.clip(sol[d] + phi * (sol[d] - self.population[k][d]), 1, 254))
+
         return sorted(cand)
 
 
@@ -292,7 +306,8 @@ class GAforABC:
                                           self.fitness_function, self.rng.randint(0, 1000000))
             _, best_fitness = abc.evolve()
             return best_fitness
-        except:
+        except Exception as e:
+            print(f"GA fitness evaluation failed: {e}")
             return float('-inf')  # Return worst fitness if error occurs
 
     def evolve(self):
@@ -319,13 +334,17 @@ class GAforABC:
                 print(f"GA Generation {generation}: Best score = {best_score:.6f}")
 
             # Selection (top 50%)
-            elite_size = len(self.population) // 2
+            elite_size = max(1, len(self.population) // 2)  # Ensure at least 1
             parents = self.population[:elite_size]
             new_population = parents.copy()
 
             # Crossover and mutation
             while len(new_population) < self.ga_config['pop_size']:
-                p1, p2 = self.rng.sample(parents, 2)
+                if len(parents) >= 2:
+                    p1, p2 = self.rng.sample(parents, 2)
+                else:
+                    p1 = p2 = parents[0]  # If only one parent, use it for both
+
                 child = [
                     int((p1[0] + p2[0]) / 2 + self.rng.randint(-5, 5)),  # pop_size
                     max(0.1, min(1.0, (p1[1] + p2[1]) / 2 + self.rng.uniform(-0.1, 0.1))),  # mutation_factor
@@ -369,9 +388,15 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
     else:  # "otsu"
         fitness_func = calculate_otsu
 
-    # Run ABC optimization
-    abc = PureArtificialBeeColony(abc_config, num_thresholds, hist, fitness_func, run_seed)
-    best_solution, best_fitness = abc.evolve()
+    # Run ABC optimization with error handling
+    try:
+        abc = PureArtificialBeeColony(abc_config, num_thresholds, hist, fitness_func, run_seed)
+        best_solution, best_fitness = abc.evolve()
+    except Exception as e:
+        print(f"[ERROR] ABC failed for {filename} with {fitness_function}, thresholds={num_thresholds}: {e}")
+        # Use random thresholds as fallback
+        best_solution = sorted(random.sample(range(1, 255), num_thresholds))
+        best_fitness = fitness_func(hist, best_solution)
 
     # Calculate execution time
     execution_time_ms = (time.time() - start_time) * 1000
@@ -435,32 +460,46 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
     random.seed(ga_seed)
     np.random.seed(ga_seed)
 
+    # Default ABC configuration as fallback
+    default_abc_config = {
+        'pop_size': 50,
+        'max_generations': 100,
+        'mutation_factor': 0.5,
+        'limit_ratio': 0.3
+    }
+
     # Use first image to tune ABC via GA
     sample_file = files[0]
-    sample_img = cv2.imread(os.path.join(folder_path, sample_file), cv2.IMREAD_GRAYSCALE)
+    sample_path = os.path.join(folder_path, sample_file)
+    sample_img = cv2.imread(sample_path, cv2.IMREAD_GRAYSCALE)
+
     if sample_img is None:
         print(f"Could not load sample image {sample_file}. Using default parameters.")
-        abc_config = {
-            'pop_size': 50,
-            'max_generations': 100,
-            'mutation_factor': 0.5,
-            'limit_ratio': 0.3
-        }
+        abc_config = default_abc_config
     else:
         hist = cv2.calcHist([sample_img], [0], None, [256], [0, 256]).flatten()
 
         # Configure GA for ABC parameter tuning
         ga_config = {'pop_size': 6, 'max_generations': 5}  # Keep light for speed
-        ga = GAforABC(ga_config, hist, calculate_entropy, num_thresholds=3, seed=ga_seed)
-        best_params, _ = ga.evolve()
+        try:
+            ga = GAforABC(ga_config, hist, calculate_entropy, num_thresholds=3, seed=ga_seed)
+            best_params, _ = ga.evolve()
 
-        abc_config = {
-            'pop_size': int(best_params[0]),
-            'max_generations': 100,
-            'mutation_factor': best_params[1],
-            'limit_ratio': best_params[2]
-        }
-        print("Best ABC parameters from GA:", abc_config)
+            # Check if best_params is None before using it
+            if best_params is None:
+                print("GA evolution failed to produce parameters. Using default parameters.")
+                abc_config = default_abc_config
+            else:
+                abc_config = {
+                    'pop_size': int(best_params[0]),
+                    'max_generations': 100,
+                    'mutation_factor': best_params[1],
+                    'limit_ratio': best_params[2]
+                }
+                print("Best ABC parameters from GA:", abc_config)
+        except Exception as e:
+            print(f"GA parameter tuning failed: {e}. Using default parameters.")
+            abc_config = default_abc_config
 
     # Create tasks for parallel processing
     tasks = []
@@ -471,10 +510,24 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
 
     print(f"Processing {len(tasks)} tasks with {n_jobs} workers...")
 
-    # Process images in parallel
-    results = Parallel(n_jobs=n_jobs, verbose=10)(
-        delayed(process_single)(*task) for task in tasks
-    )
+    # Process images in parallel with better error handling
+    try:
+        results = Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(process_single)(*task) for task in tasks
+        )
+    except Exception as e:
+        print(f"Parallel processing failed: {e}")
+        # Fallback to sequential processing
+        print("Falling back to sequential processing...")
+        results = []
+        for i, task in enumerate(tasks):
+            try:
+                result = process_single(*task)
+                results.append(result)
+                print(f"Sequential progress: {i + 1}/{len(tasks)}")
+            except Exception as task_error:
+                print(f"Task {i + 1} failed: {task_error}")
+                results.append(None)
 
     # Filter out None results
     results = [r for r in results if r is not None]
@@ -519,12 +572,12 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
 
 if __name__ == "__main__":
     # Configuration
-    folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    output = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
-    levels = [2, 3, 4, 5]  # Reduced for testing, you can expand to [2, 3, 4, 5, 6, 7, 8, 9, 10]
+    folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
+    output = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
+    levels = [2, 3, 4]  # Reduced for testing, you can expand to [2, 3, 4, 5, 6, 7, 8, 9, 10]
 
     # Process images
-    df = process_images_in_folder(folder, levels, output, n_jobs=-1)
+    df = process_images_in_folder(folder, levels, output, n_jobs=1)  # Reduced to 1 job for stability
 
     if df is not None:
         print("\nProcessing completed successfully!")
