@@ -408,7 +408,9 @@ class DEGAConfigurator:
 def process_single(file_name, folder_path, num_thresholds, func_name, de_configurator, seed=None, images_folder=None):
     """Process a single image with given parameters."""
     try:
-        run_seed = (seed + hash(file_name) + num_thresholds + hash(func_name)) % 1000000
+        # Generate consistent seed based on image name, fitness function, and threshold level
+        seed_str = f"{file_name}_{func_name}_{num_thresholds}_{seed}"
+        run_seed = hash(seed_str) % 1000000
         np.random.seed(run_seed)
         random.seed(run_seed)
 
@@ -460,7 +462,7 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
 
         return {
             "image_name": file_name,
-            "fitness_function": func_name.capitalize(),
+            "fitness_function": func_name,  # Keep lowercase
             "thresholding_level": num_thresholds,
             "threshold_value": threshold_value_str,
             "fitness_value": best_score,
@@ -468,7 +470,7 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
             "MSE": mse_value,
             "PSNR": psnr_value,
             "Uniformity Measure": uniformity,
-            "Random Seed": run_seed,
+            "Seed": run_seed,  # Changed from 'Random Seed' to 'Seed'
             "Execution Time (ms)": execution_time_ms
         }
 
@@ -551,10 +553,11 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
     de_configurator = DEGAConfigurator(seed=seed)
 
+    # Create tasks in the specific order: image1-kapur-all_levels, image1-otsu-all_levels, etc.
     tasks = []
     for f in files:
-        for t in threshold_levels:
-            for func in ["kapur", "otsu"]:
+        for func in ["kapur", "otsu"]:  # Process kapur first for each image, then otsu
+            for t in threshold_levels:
                 tasks.append((f, folder_path, t, func, de_configurator, seed, images_folder))
 
     print(f"Processing {len(tasks)} tasks with {n_jobs} workers...")
@@ -576,6 +579,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
     if valid_results:
         df = pd.DataFrame(valid_results)
 
+        # Use exact column names as requested
         column_order = [
             'image_name',
             'fitness_function',
@@ -586,7 +590,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
             'MSE',
             'PSNR',
             'Uniformity Measure',
-            'Random Seed',
+            'Seed',  # Changed from 'Random Seed'
             'Execution Time (ms)'
         ]
 
@@ -597,35 +601,69 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
         df = df[column_order]
 
+        # Create a custom sorting key for fitness_function to ensure "kapur" comes before "otsu"
+        def fitness_function_order(func):
+            return 0 if func == "kapur" else 1
+
+        # Sort the results to match the desired order:
+        # 1. First by image name
+        # 2. Then by fitness function (kapur first, then otsu) using custom order
+        # 3. Then by thresholding level (ascending)
+        df_sorted = df.copy()
+        df_sorted['fitness_order'] = df_sorted['fitness_function'].apply(fitness_function_order)
+        df_sorted = df_sorted.sort_values(['image_name', 'fitness_order', 'thresholding_level'])
+        df_sorted = df_sorted.drop('fitness_order', axis=1)
+        df_sorted = df_sorted.reset_index(drop=True)
+
+        # Format numbers properly
+        df_sorted['fitness_value'] = df_sorted['fitness_value'].apply(lambda x: format_number(x, 8))
+        df_sorted['SSIM'] = df_sorted['SSIM'].apply(lambda x: format_number(x, 6))
+        df_sorted['MSE'] = df_sorted['MSE'].apply(lambda x: format_number(x, 2))
+        df_sorted['PSNR'] = df_sorted['PSNR'].apply(lambda x: format_number(x, 2))
+        df_sorted['Uniformity Measure'] = df_sorted['Uniformity Measure'].apply(lambda x: format_number(x, 6))
+        df_sorted['Execution Time (ms)'] = df_sorted['Execution Time (ms)'].apply(lambda x: format_number(x, 2))
+
         # Save the results
-        if safe_save_excel(df, output_file):
+        if safe_save_excel(df_sorted, output_file):
             print(f"Results saved to {output_file}")
         else:
             # Last resort: print results to console
             print("Could not save to file. Printing results:")
-            print(df.to_string())
+            print(df_sorted.to_string())
 
         print(f"Successfully processed {len(valid_results)} configurations")
+
+        # Display preview of results
+        print("\nResults preview (first 12 rows):")
+        print("-" * 120)
+        print(
+            f"{'image_name':<15} {'fitness_function':<15} {'thresholding_level':<18} {'threshold_value':<15} {'fitness_value':<15} {'SSIM':<10} {'MSE':<10} {'PSNR':<8} {'Uniformity Measure':<18} {'Seed':<10} {'Execution Time (ms)':<15}")
+        print("-" * 120)
+
+        for i, row in df_sorted.head(12).iterrows():
+            print(
+                f"{row['image_name']:<15} {row['fitness_function']:<15} {row['thresholding_level']:<18} {row['threshold_value']:<15} {row['fitness_value']:<15} {row['SSIM']:<10} {row['MSE']:<10} {row['PSNR']:<8} {row['Uniformity Measure']:<18} {row['Seed']:<10} {row['Execution Time (ms)']:<15}")
 
         # Display summary statistics
         print("\nSummary Statistics:")
         numeric_columns = ['SSIM', 'PSNR', 'MSE', 'Uniformity Measure', 'fitness_value']
         for col in numeric_columns:
-            if col in df.columns and df[col].notna().any():
-                col_data = pd.to_numeric(df[col], errors='coerce').dropna()
+            if col in df_sorted.columns and df_sorted[col].notna().any():
+                # Convert back to numeric for statistics
+                col_data = pd.to_numeric(df_sorted[col], errors='coerce').dropna()
                 if len(col_data) > 0:
                     print(f"{col} value range: [{col_data.min():.6f} - {col_data.max():.6f}]")
 
     else:
         print("No valid results to save")
-        df = pd.DataFrame()
+        df_sorted = pd.DataFrame()
 
     if error_results:
         print(f"\nErrors encountered in {len(error_results)} processing tasks:")
         for error_result in error_results:
             print(f"  {error_result['image_name']} - {error_result['fitness_function']}: {error_result['error']}")
 
-    return df
+    return df_sorted
 
 
 # ===============================
@@ -635,7 +673,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 if __name__ == "__main__":
     # Configuration with your specific paths
     folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
-    levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
+    levels = [2, 3, 4]  # You can modify this as needed
     output_dir = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
 
     # Create results directory
@@ -660,6 +698,12 @@ if __name__ == "__main__":
             images_folder = os.path.join(output_dir, "imagesPerThresholdLevel_DEGA")
             print(f"Results saved to: {output_file}")
             print(f"Segmented images saved to: {images_folder}")
+
+            # Show grouping by image and fitness function
+            print("\nGrouping structure:")
+            grouped = df.groupby(['image_name', 'fitness_function']).size()
+            for (image, func), count in grouped.items():
+                print(f"{image} - {func}: {count} threshold levels")
         else:
             print("Processing completed with errors!")
     except Exception as e:
