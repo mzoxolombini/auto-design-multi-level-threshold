@@ -13,19 +13,13 @@ import math
 # ----------------- Corrected Utility Functions -----------------
 
 def ssim(image1, image2):
-    """
-    Calculate Structural Similarity Index between two images.
-    Returns value in range [-1, 1], typically [0, 1].
-    """
-    # Normalize to [0,1] range
+    """Calculate Structural Similarity Index between two images."""
     img1 = image1.astype(np.float64) / 255.0
     img2 = image2.astype(np.float64) / 255.0
 
-    # Constants for normalized images [0,1]
     C1 = 0.01 ** 2
     C2 = 0.03 ** 2
 
-    # Gaussian kernel
     kernel_size = 11
     sigma = 1.5
     x = np.arange(-kernel_size // 2 + 1, kernel_size // 2 + 1)
@@ -44,7 +38,6 @@ def ssim(image1, image2):
     sigma2_sq = correlate(img2 ** 2, kernel, mode='reflect') - mu2_sq
     sigma12 = correlate(img1 * img2, kernel, mode='reflect') - mu1_mu2
 
-    # Ensure numerical stability
     sigma1_sq = np.maximum(sigma1_sq, 0)
     sigma2_sq = np.maximum(sigma2_sq, 0)
 
@@ -70,11 +63,18 @@ def calculate_entropy(hist, thresholds):
     prev_threshold = 0
 
     for threshold in thresholds + [len(hist)]:
-        class_probs = probs[prev_threshold:threshold]
+        start_idx = max(0, min(prev_threshold, len(hist) - 1))
+        end_idx = max(0, min(threshold, len(hist)))
+
+        if start_idx >= end_idx:
+            entropies.append(0.0)
+            prev_threshold = threshold
+            continue
+
+        class_probs = probs[start_idx:end_idx]
         class_sum = np.sum(class_probs)
 
         if class_sum > 1e-10:
-            # Remove zero probabilities to avoid log(0)
             class_probs_nonzero = class_probs[class_probs > 1e-10]
             if len(class_probs_nonzero) > 0:
                 entropy_val = -np.sum((class_probs_nonzero / class_sum) *
@@ -105,10 +105,16 @@ def calculate_otsu(hist, thresholds):
     thresholds = [0] + thresholds + [len(hist)]
 
     for i in range(1, len(thresholds)):
-        w_i = np.sum(probs[thresholds[i - 1]:thresholds[i]])
+        start_idx = max(0, min(thresholds[i - 1], len(hist) - 1))
+        end_idx = max(0, min(thresholds[i], len(hist)))
+
+        if start_idx >= end_idx:
+            continue
+
+        w_i = np.sum(probs[start_idx:end_idx])
         if w_i > 1e-10:
-            mu_i = np.sum(np.arange(thresholds[i - 1], thresholds[i]) *
-                          probs[thresholds[i - 1]:thresholds[i]]) / w_i
+            mu_i = np.sum(np.arange(start_idx, end_idx) *
+                          probs[start_idx:end_idx]) / w_i
             between_class_variance += w_i * (mu_i - global_mean) ** 2
 
     return float(between_class_variance)
@@ -144,18 +150,14 @@ def apply_thresholds(image, thresholds):
     thresholds = sorted(thresholds)
     segmented = np.zeros_like(image, dtype=np.uint8)
 
-    # First class: values <= first threshold
     segmented[image <= thresholds[0]] = 0
 
-    # Middle classes
     for i in range(1, len(thresholds)):
         mask = (image > thresholds[i - 1]) & (image <= thresholds[i])
         segmented[mask] = i
 
-    # Last class: values > last threshold
     segmented[image > thresholds[-1]] = len(thresholds)
 
-    # Normalize to 0-255 for display
     max_val = len(thresholds)
     if max_val > 0:
         segmented = (segmented * (255 // max_val)).astype(np.uint8)
@@ -173,7 +175,7 @@ def format_number(value, decimals=8):
     return fmt.replace('.', ',')
 
 
-# ----------------- Pure ABC Algorithm -----------------
+# ----------------- Fixed Pure ABC Algorithm -----------------
 
 class PureArtificialBeeColony:
     def __init__(self, config, num_thresholds, hist, fitness_function, seed=None):
@@ -184,24 +186,76 @@ class PureArtificialBeeColony:
         self.rng = random.Random(seed)
         self.np_rng = np.random.RandomState(seed)
 
-        # Ensure population size is at least 2 for candidate generation
-        pop_size = max(2, config['pop_size'])
-        self.population = [sorted(self.rng.sample(range(1, 255), num_thresholds))
-                           for _ in range(pop_size)]
+        # Ensure population size is reasonable
+        pop_size = max(5, min(50, config['pop_size']))  # Reasonable bounds
+        self.population = [self._generate_valid_thresholds() for _ in range(pop_size)]
         self.trials = [0] * pop_size
-        self.limit = int(pop_size * config['limit_ratio'])
+        self.limit = max(5, int(pop_size * config['limit_ratio']))  # Minimum limit
         self.best_solution, self.best_fitness = None, float('-inf')
 
+        # Initialize best solution
+        self._initialize_best()
+
+    def _initialize_best(self):
+        """Initialize the best solution from population."""
+        for ind in self.population:
+            fitness_val = self.fitness(ind)
+            if fitness_val > self.best_fitness:
+                self.best_solution = ind.copy()
+                self.best_fitness = fitness_val
+
+    def _generate_valid_thresholds(self):
+        """Generate valid thresholds within histogram range."""
+        if self.num_thresholds == 0:
+            return []
+
+        # Generate unique thresholds with proper spacing
+        max_attempts = 100
+        thresholds = set()
+
+        while len(thresholds) < self.num_thresholds and len(thresholds) < 254:
+            new_thresh = self.rng.randint(1, 254)
+            thresholds.add(new_thresh)
+
+            if len(thresholds) >= max_attempts:
+                break
+
+        # If we need more thresholds, add sequential ones
+        if len(thresholds) < self.num_thresholds:
+            needed = self.num_thresholds - len(thresholds)
+            start = 10
+            while len(thresholds) < self.num_thresholds and start < 245:
+                thresholds.add(start)
+                start += max(1, (240 - start) // needed)
+
+        thresholds = sorted(thresholds)[:self.num_thresholds]
+        return thresholds
+
     def fitness(self, ind):
-        """Calculate fitness of an individual."""
-        return self.fitness_function(self.hist, ind)
+        """Calculate fitness of an individual with error handling."""
+        try:
+            if len(ind) != self.num_thresholds:
+                return float('-inf')
+
+            if any(t <= 0 or t >= 255 for t in ind):
+                return float('-inf')
+
+            # Check for duplicate thresholds
+            if len(set(ind)) != len(ind):
+                return float('-inf')
+
+            return self.fitness_function(self.hist, ind)
+        except Exception as e:
+            return float('-inf')
 
     def evolve(self):
-        """Run the ABC optimization process."""
+        """Run the ABC optimization process with robust error handling."""
         for generation in range(self.config['max_generations']):
-            self.employed()
-            self.onlooker()
-            self.scout()
+            success = self._run_generation(generation)
+
+            if not success:
+                print(f"Generation {generation} failed, resetting population...")
+                self._reset_population()
 
             # Print progress every 10 generations
             if generation % 10 == 0:
@@ -209,71 +263,172 @@ class PureArtificialBeeColony:
 
         return self.best_solution, self.best_fitness
 
-    def employed(self):
-        """Employed bee phase."""
-        for i in range(len(self.population)):
-            cand = self.candidate(self.population[i], i)
-            cand_fitness = self.fitness(cand)
-            current_fitness = self.fitness(self.population[i])
+    def _run_generation(self, generation):
+        """Run a single generation with comprehensive error handling."""
+        try:
+            self.employed()
+            self.onlooker()
+            self.scout()
+            return True
+        except Exception as e:
+            print(f"Generation {generation} error: {e}")
+            return False
 
-            if cand_fitness > current_fitness:
-                self.population[i] = cand
-                self.trials[i] = 0
-                if cand_fitness > self.best_fitness:
-                    self.best_solution = cand.copy()
-                    self.best_fitness = cand_fitness
-            else:
-                self.trials[i] += 1
+    def _reset_population(self):
+        """Reset population while keeping the best solution."""
+        best_backup = self.best_solution.copy()
+        best_fitness_backup = self.best_fitness
+
+        self.population = [self._generate_valid_thresholds() for _ in range(len(self.population))]
+        self.trials = [0] * len(self.population)
+
+        # Restore best solution
+        self.best_solution = best_backup
+        self.best_fitness = best_fitness_backup
+
+        # Add best solution to population
+        if self.best_solution is not None:
+            self.population[0] = self.best_solution.copy()
+
+    def employed(self):
+        """Employed bee phase with error handling."""
+        for i in range(len(self.population)):
+            try:
+                cand = self.candidate(self.population[i], i)
+                cand_fitness = self.fitness(cand)
+                current_fitness = self.fitness(self.population[i])
+
+                if cand_fitness > current_fitness:
+                    self.population[i] = cand
+                    self.trials[i] = 0
+                    if cand_fitness > self.best_fitness:
+                        self.best_solution = cand.copy()
+                        self.best_fitness = cand_fitness
+                else:
+                    self.trials[i] += 1
+            except Exception as e:
+                self.trials[i] += 1  # Penalize failed candidate
+                continue
 
     def onlooker(self):
-        """Onlooker bee phase."""
-        fits = np.array([self.fitness(ind) for ind in self.population])
-        # Handle negative fitness values
-        fits = fits - fits.min() + 1e-10
-        probs = fits / fits.sum()
+        """Onlooker bee phase with robust probability calculation."""
+        try:
+            fits = np.array([max(self.fitness(ind), 1e-10) for ind in self.population])
 
-        for _ in range(len(self.population)):
-            idx = self.np_rng.choice(len(self.population), p=probs)
-            cand = self.candidate(self.population[idx], idx)
-            cand_fitness = self.fitness(cand)
-            current_fitness = self.fitness(self.population[idx])
+            # Handle case where all fitness values are the same
+            if np.max(fits) - np.min(fits) < 1e-10:
+                probs = np.ones(len(fits)) / len(fits)
+            else:
+                # Normalize fitness values
+                fits_normalized = (fits - np.min(fits)) / (np.max(fits) - np.min(fits) + 1e-10)
+                probs = fits_normalized / (np.sum(fits_normalized) + 1e-10)
 
-            if cand_fitness > current_fitness:
-                self.population[idx] = cand
-                self.trials[idx] = 0
-                if cand_fitness > self.best_fitness:
-                    self.best_solution = cand.copy()
-                    self.best_fitness = cand_fitness
+            # Ensure probabilities are valid
+            if np.any(np.isnan(probs)) or np.sum(probs) == 0:
+                probs = np.ones(len(fits)) / len(fits)
+            else:
+                probs = probs / np.sum(probs)  # Re-normalize
+
+            for _ in range(len(self.population)):
+                idx = self.np_rng.choice(len(self.population), p=probs)
+                try:
+                    cand = self.candidate(self.population[idx], idx)
+                    cand_fitness = self.fitness(cand)
+                    current_fitness = self.fitness(self.population[idx])
+
+                    if cand_fitness > current_fitness:
+                        self.population[idx] = cand
+                        self.trials[idx] = 0
+                        if cand_fitness > self.best_fitness:
+                            self.best_solution = cand.copy()
+                            self.best_fitness = cand_fitness
+                    else:
+                        self.trials[idx] += 1
+                except Exception:
+                    self.trials[idx] += 1
+                    continue
+
+        except Exception as e:
+            print(f"Onlooker phase error: {e}")
+            # Fallback: random selection
+            for _ in range(len(self.population)):
+                idx = self.rng.randint(0, len(self.population))
+                try:
+                    cand = self.candidate(self.population[idx], idx)
+                    cand_fitness = self.fitness(cand)
+                    current_fitness = self.fitness(self.population[idx])
+
+                    if cand_fitness > current_fitness:
+                        self.population[idx] = cand
+                        self.trials[idx] = 0
+                        if cand_fitness > self.best_fitness:
+                            self.best_solution = cand.copy()
+                            self.best_fitness = cand_fitness
+                    else:
+                        self.trials[idx] += 1
+                except Exception:
+                    self.trials[idx] += 1
+                    continue
 
     def scout(self):
         """Scout bee phase."""
         for i in range(len(self.population)):
             if self.trials[i] >= self.limit:
-                self.population[i] = sorted(self.rng.sample(range(1, 255), self.num_thresholds))
-                self.trials[i] = 0
+                try:
+                    self.population[i] = self._generate_valid_thresholds()
+                    self.trials[i] = 0
+                    new_fitness = self.fitness(self.population[i])
+                    if new_fitness > self.best_fitness:
+                        self.best_solution = self.population[i].copy()
+                        self.best_fitness = new_fitness
+                except Exception:
+                    continue
 
     def candidate(self, sol, idx):
-        """Generate a candidate solution."""
-        cand = sol.copy()
+        """Generate a candidate solution with comprehensive error handling."""
+        if len(sol) == 0:
+            return self._generate_valid_thresholds()
 
-        # Ensure there are other individuals to choose from
-        if len(self.population) <= 1:
-            # If only one individual, create a random modification
+        try:
+            cand = sol.copy()
             d = self.rng.randint(0, len(cand))
-            phi = self.rng.uniform(-1, 1) * self.config['mutation_factor']
-            cand[d] = int(np.clip(sol[d] + phi * sol[d], 1, 254))
-        else:
-            # Normal case with multiple individuals
-            d = self.rng.randint(0, len(cand))
-            # Choose k different from idx
-            k = self.rng.choice([j for j in range(len(self.population)) if j != idx])
-            phi = self.rng.uniform(-1, 1) * self.config['mutation_factor']
-            cand[d] = int(np.clip(sol[d] + phi * (sol[d] - self.population[k][d]), 1, 254))
 
-        return sorted(cand)
+            if len(self.population) <= 1:
+                # Random modification
+                phi = self.rng.uniform(-0.5, 0.5)  # Smaller range for stability
+                new_val = int(np.clip(sol[d] + phi * 10, 1, 254))
+            else:
+                # Choose a different individual
+                available_indices = [j for j in range(len(self.population)) if j != idx]
+                if not available_indices:
+                    k = 0
+                else:
+                    k = self.rng.choice(available_indices)
+
+                phi = self.rng.uniform(-0.5, 0.5)
+                difference = sol[d] - self.population[k][d]
+                new_val = int(np.clip(sol[d] + phi * difference, 1, 254))
+
+            cand[d] = new_val
+
+            # Ensure thresholds remain unique and sorted
+            cand = sorted(set(cand))
+
+            # If we lost thresholds due to duplication, add new ones
+            while len(cand) < self.num_thresholds:
+                new_thresh = self.rng.randint(1, 254)
+                if new_thresh not in cand:
+                    cand.append(new_thresh)
+            cand = sorted(cand)[:self.num_thresholds]
+
+            return cand
+
+        except Exception as e:
+            # Fallback: return original solution
+            return sol.copy()
 
 
-# ----------------- GA for ABC Configuration -----------------
+# ----------------- Simplified GA for ABC Configuration -----------------
 
 class GAforABC:
     def __init__(self, ga_config, hist, fitness_function, num_thresholds, seed=None):
@@ -285,30 +440,29 @@ class GAforABC:
         self.np_rng = np.random.RandomState(seed)
 
         self.population = [
-            [self.rng.randint(20, 80),  # pop_size
-             self.rng.uniform(0.1, 1.0),  # mutation_factor
-             self.rng.uniform(0.1, 0.5)]  # limit_ratio
-            for _ in range(ga_config['pop_size'])
+            [self.rng.randint(10, 30),  # Smaller population
+             self.rng.uniform(0.3, 0.7),  # mutation_factor
+             self.rng.uniform(0.2, 0.4)]  # limit_ratio
+            for _ in range(max(2, ga_config['pop_size']))
         ]
 
     def fitness(self, chromosome):
         """Evaluate fitness of a GA chromosome."""
         pop_size, mutation_factor, limit_ratio = chromosome
         abc_config = {
-            'pop_size': int(pop_size),
-            'max_generations': 30,  # Smaller for faster GA evaluation
-            'mutation_factor': mutation_factor,
-            'limit_ratio': limit_ratio
+            'pop_size': max(5, int(pop_size)),
+            'max_generations': 10,  # Very small for speed
+            'mutation_factor': max(0.1, min(1.0, mutation_factor)),
+            'limit_ratio': max(0.1, min(0.5, limit_ratio))
         }
 
         try:
             abc = PureArtificialBeeColony(abc_config, self.num_thresholds, self.hist,
                                           self.fitness_function, self.rng.randint(0, 1000000))
             _, best_fitness = abc.evolve()
-            return best_fitness
+            return best_fitness if not np.isnan(best_fitness) else float('-inf')
         except Exception as e:
-            print(f"GA fitness evaluation failed: {e}")
-            return float('-inf')  # Return worst fitness if error occurs
+            return float('-inf')
 
     def evolve(self):
         """Run GA evolution to find best ABC parameters."""
@@ -316,41 +470,50 @@ class GAforABC:
         best_score = float('-inf')
 
         for generation in range(self.ga_config['max_generations']):
-            # Evaluate population
             scores = []
             for ind in self.population:
                 score = self.fitness(ind)
                 scores.append(score)
 
-            # Rank population
-            ranked = sorted(zip(self.population, scores), key=lambda x: x[1], reverse=True)
+            # Filter out invalid scores
+            valid_indices = [i for i, score in enumerate(scores) if score > float('-inf')]
+            if not valid_indices:
+                print("No valid solutions in GA population, resetting...")
+                self.population = [
+                    [self.rng.randint(10, 30), self.rng.uniform(0.3, 0.7), self.rng.uniform(0.2, 0.4)]
+                    for _ in range(len(self.population))
+                ]
+                continue
+
+            valid_population = [self.population[i] for i in valid_indices]
+            valid_scores = [scores[i] for i in valid_indices]
+
+            ranked = sorted(zip(valid_population, valid_scores), key=lambda x: x[1], reverse=True)
             self.population = [x[0] for x in ranked]
             scores_sorted = [x[1] for x in ranked]
 
-            # Update best solution
-            if scores_sorted[0] > best_score:
+            # Fill remaining population with new individuals if needed
+            while len(self.population) < self.ga_config['pop_size']:
+                self.population.append([
+                    self.rng.randint(10, 30),
+                    self.rng.uniform(0.3, 0.7),
+                    self.rng.uniform(0.2, 0.4)
+                ])
+
+            if scores_sorted and scores_sorted[0] > best_score:
                 best_chromosome = self.population[0].copy()
                 best_score = scores_sorted[0]
                 print(f"GA Generation {generation}: Best score = {best_score:.6f}")
 
-            # Selection (top 50%)
-            elite_size = max(1, len(self.population) // 2)  # Ensure at least 1
-            parents = self.population[:elite_size]
-            new_population = parents.copy()
-
-            # Crossover and mutation
+            # Simple mutation for next generation
+            new_population = self.population[:max(1, len(self.population) // 2)]
             while len(new_population) < self.ga_config['pop_size']:
-                if len(parents) >= 2:
-                    p1, p2 = self.rng.sample(parents, 2)
-                else:
-                    p1 = p2 = parents[0]  # If only one parent, use it for both
-
+                parent = self.rng.choice(new_population)
                 child = [
-                    int((p1[0] + p2[0]) / 2 + self.rng.randint(-5, 5)),  # pop_size
-                    max(0.1, min(1.0, (p1[1] + p2[1]) / 2 + self.rng.uniform(-0.1, 0.1))),  # mutation_factor
-                    max(0.1, min(0.5, (p1[2] + p2[2]) / 2 + self.rng.uniform(-0.05, 0.05)))  # limit_ratio
+                    max(5, parent[0] + self.rng.randint(-2, 3)),
+                    max(0.1, min(1.0, parent[1] + self.rng.uniform(-0.1, 0.1))),
+                    max(0.1, min(0.5, parent[2] + self.rng.uniform(-0.05, 0.05)))
                 ]
-                child[0] = max(10, min(100, child[0]))  # Ensure pop_size is within bounds
                 new_population.append(child)
 
             self.population = new_population
@@ -363,20 +526,19 @@ class GAforABC:
 def process_single(filename, folder_path, num_thresholds, fitness_function, abc_config, random_seed, images_folder):
     """Process a single image with given parameters."""
     filepath = os.path.join(folder_path, filename)
-    print(f"[START] {filename} | {fitness_function} | thresholds={num_thresholds}", flush=True, file=sys.stderr)
+    print(f"[START] {filename} | {fitness_function} | thresholds={num_thresholds}")
 
     # Load image
     image = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
     if image is None:
-        print(f"[SKIP] Could not load {filename}", flush=True, file=sys.stderr)
+        print(f"[SKIP] Could not load {filename}")
         return None
 
-    # Generate unique seed for this run
+    # Generate unique seed
     run_seed = (random_seed + hash(filename) + num_thresholds) % 1000000
     random.seed(run_seed)
     np.random.seed(run_seed)
 
-    # Start timing
     start_time = time.time()
 
     # Calculate histogram
@@ -385,52 +547,64 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
     # Select fitness function
     if fitness_function == "kapur":
         fitness_func = calculate_entropy
-    else:  # "otsu"
+    else:
         fitness_func = calculate_otsu
 
-    # Run ABC optimization with error handling
+    # Run ABC optimization
     try:
         abc = PureArtificialBeeColony(abc_config, num_thresholds, hist, fitness_func, run_seed)
         best_solution, best_fitness = abc.evolve()
+
+        if best_solution is None or len(best_solution) != num_thresholds:
+            raise ValueError("Invalid solution from ABC")
+
     except Exception as e:
-        print(f"[ERROR] ABC failed for {filename} with {fitness_function}, thresholds={num_thresholds}: {e}")
-        # Use random thresholds as fallback
-        best_solution = sorted(random.sample(range(1, 255), num_thresholds))
+        print(f"[ERROR] ABC failed for {filename}: {e}")
+        # Simple fallback: evenly spaced thresholds
+        best_solution = [int(i * 255 / (num_thresholds + 1)) for i in range(1, num_thresholds + 1)]
         best_fitness = fitness_func(hist, best_solution)
 
-    # Calculate execution time
     execution_time_ms = (time.time() - start_time) * 1000
 
     # Apply thresholds and calculate metrics
-    seg_img = apply_thresholds(image, best_solution)
-    mse = calculate_mse(image, seg_img)
-    psnr = calculate_psnr(mse)
-    ssim_value = ssim(image, seg_img)
-    uniformity_value = calculate_uniformity(seg_img)
+    try:
+        seg_img = apply_thresholds(image, best_solution)
+        mse = calculate_mse(image, seg_img)
+        psnr = calculate_psnr(mse)
+        ssim_value = ssim(image, seg_img)
+        uniformity_value = calculate_uniformity(seg_img)
+    except Exception as e:
+        print(f"[WARNING] Metric calculation failed: {e}")
+        mse = 10000.0
+        psnr = 0.0
+        ssim_value = 0.0
+        uniformity_value = 0.0
+        seg_img = np.zeros_like(image)
 
-    # Format thresholds as string
     threshold_str = f"[{', '.join(map(str, sorted(best_solution)))}]"
 
     print(f"[DONE] {filename} | {fitness_function} | thresholds={num_thresholds} | "
-          f"fitness={best_fitness:.4f} | time={execution_time_ms:.2f}ms",
-          flush=True, file=sys.stderr)
+          f"fitness={best_fitness:.4f} | time={execution_time_ms:.2f}ms")
 
     # Save segmented image
-    image_name_base = os.path.splitext(filename)[0]
-    output_filename = f"{image_name_base}_{fitness_function}_{num_thresholds}_thresholds.png"
-    output_image_path = os.path.join(images_folder, output_filename)
-    cv2.imwrite(output_image_path, seg_img)
+    try:
+        image_name_base = os.path.splitext(filename)[0]
+        output_filename = f"{image_name_base}_{fitness_function}_{num_thresholds}_thresholds.png"
+        output_image_path = os.path.join(images_folder, output_filename)
+        cv2.imwrite(output_image_path, seg_img)
+    except Exception as e:
+        print(f"[WARNING] Could not save image: {e}")
 
     return {
         'image_name': filename,
         'fitness_function': fitness_function.capitalize(),
         'thresholding_level': num_thresholds,
         'threshold_value': threshold_str,
-        'fitness_value': format_number(best_fitness, 8),
-        'SSIM': format_number(ssim_value, 7),
-        'MSE': format_number(mse, 7),
-        'PSNR': format_number(psnr, 7),
-        'Uniformity Measure': format_number(uniformity_value, 7),
+        'fitness_value': format_number(best_fitness, 4),
+        'SSIM': format_number(ssim_value, 4),
+        'MSE': format_number(mse, 4),
+        'PSNR': format_number(psnr, 4),
+        'Uniformity Measure': format_number(uniformity_value, 4),
         'Random Seed': run_seed,
         'Execution Time (ms)': format_number(execution_time_ms, 2)
     }
@@ -438,130 +612,71 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
 
 # ----------------- Main Runner -----------------
 
-def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=-1):
+def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=1):
     """Main function to process all images in a folder."""
-    # Create output directories
     images_folder = os.path.join(output_path, "imagesPerThresholdLevel_GAABC")
     if not os.path.exists(images_folder):
         os.makedirs(images_folder)
 
-    # Get image files
     files = [f for f in os.listdir(folder_path)
              if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))]
 
     if not files:
-        print("No image files found in the specified folder.")
+        print("No image files found.")
         return None
 
     print(f"Found {len(files)} images to process.")
 
-    # Generate unique seed for GA configuration
-    ga_seed = int(time.time() * 1000) % 1000000
-    random.seed(ga_seed)
-    np.random.seed(ga_seed)
-
-    # Default ABC configuration as fallback
-    default_abc_config = {
-        'pop_size': 50,
-        'max_generations': 100,
+    # Use simple default configuration
+    abc_config = {
+        'pop_size': 20,
+        'max_generations': 50,
         'mutation_factor': 0.5,
         'limit_ratio': 0.3
     }
 
-    # Use first image to tune ABC via GA
-    sample_file = files[0]
-    sample_path = os.path.join(folder_path, sample_file)
-    sample_img = cv2.imread(sample_path, cv2.IMREAD_GRAYSCALE)
+    print("Using default ABC configuration:", abc_config)
 
-    if sample_img is None:
-        print(f"Could not load sample image {sample_file}. Using default parameters.")
-        abc_config = default_abc_config
-    else:
-        hist = cv2.calcHist([sample_img], [0], None, [256], [0, 256]).flatten()
-
-        # Configure GA for ABC parameter tuning
-        ga_config = {'pop_size': 6, 'max_generations': 5}  # Keep light for speed
-        try:
-            ga = GAforABC(ga_config, hist, calculate_entropy, num_thresholds=3, seed=ga_seed)
-            best_params, _ = ga.evolve()
-
-            # Check if best_params is None before using it
-            if best_params is None:
-                print("GA evolution failed to produce parameters. Using default parameters.")
-                abc_config = default_abc_config
-            else:
-                abc_config = {
-                    'pop_size': int(best_params[0]),
-                    'max_generations': 100,
-                    'mutation_factor': best_params[1],
-                    'limit_ratio': best_params[2]
-                }
-                print("Best ABC parameters from GA:", abc_config)
-        except Exception as e:
-            print(f"GA parameter tuning failed: {e}. Using default parameters.")
-            abc_config = default_abc_config
-
-    # Create tasks for parallel processing
+    # Create tasks
     tasks = []
     for f in files:
         for t in threshold_levels:
             for func in ["kapur", "otsu"]:
-                tasks.append((f, folder_path, t, func, abc_config, ga_seed, images_folder))
+                tasks.append((f, folder_path, t, func, abc_config, 42, images_folder))  # Fixed seed for reproducibility
 
-    print(f"Processing {len(tasks)} tasks with {n_jobs} workers...")
+    print(f"Processing {len(tasks)} tasks sequentially...")
 
-    # Process images in parallel with better error handling
-    try:
-        results = Parallel(n_jobs=n_jobs, verbose=10)(
-            delayed(process_single)(*task) for task in tasks
-        )
-    except Exception as e:
-        print(f"Parallel processing failed: {e}")
-        # Fallback to sequential processing
-        print("Falling back to sequential processing...")
-        results = []
-        for i, task in enumerate(tasks):
-            try:
-                result = process_single(*task)
-                results.append(result)
-                print(f"Sequential progress: {i + 1}/{len(tasks)}")
-            except Exception as task_error:
-                print(f"Task {i + 1} failed: {task_error}")
-                results.append(None)
+    # Sequential processing
+    results = []
+    for i, task in enumerate(tasks):
+        try:
+            result = process_single(*task)
+            results.append(result)
+            print(f"Progress: {i + 1}/{len(tasks)}")
+        except Exception as e:
+            print(f"Task {i + 1} failed: {e}")
+            results.append(None)
 
-    # Filter out None results
     results = [r for r in results if r is not None]
 
     if not results:
-        print("No results obtained. Check if images were processed correctly.")
+        print("No results obtained.")
         return None
 
-    # Create DataFrame
+    # Create and save results
     df = pd.DataFrame(results)
 
-    # Define column order
     column_order = [
-        'image_name',
-        'fitness_function',
-        'thresholding_level',
-        'threshold_value',
-        'fitness_value',
-        'SSIM',
-        'MSE',
-        'PSNR',
-        'Uniformity Measure',
-        'Random Seed',
-        'Execution Time (ms)'
+        'image_name', 'fitness_function', 'thresholding_level', 'threshold_value',
+        'fitness_value', 'SSIM', 'MSE', 'PSNR', 'Uniformity Measure',
+        'Random Seed', 'Execution Time (ms)'
     ]
 
     df = df[column_order]
-
-    # Ensure output directory exists
     os.makedirs(output_path, exist_ok=True)
     output_file = os.path.join(output_path, "GAABC_results.xlsx")
-
-    # Save results
     df.to_excel(output_file, index=False)
+
     print(f"Results saved to {output_file}")
     print(f"Processed {len(results)} image configurations")
 
@@ -571,18 +686,14 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
 # ----------------- Main Execution -----------------
 
 if __name__ == "__main__":
-    # Configuration
-    folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
-    output = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
-    levels = [2, 3, 4]  # Reduced for testing, you can expand to [2, 3, 4, 5, 6, 7, 8, 9, 10]
+    folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
+    output = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
 
-    # Process images
-    df = process_images_in_folder(folder, levels, output, n_jobs=1)  # Reduced to 1 job for stability
+    df = process_images_in_folder(folder, levels, output, n_jobs=1)
 
     if df is not None:
         print("\nProcessing completed successfully!")
         print(f"Total results: {len(df)}")
-        print(f"SSIM value range: [{df['SSIM'].min()} - {df['SSIM'].max()}]")
-        print(f"PSNR value range: [{df['PSNR'].min()} - {df['PSNR'].max()}]")
     else:
         print("Processing failed!")

@@ -353,6 +353,11 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
     total_ops = total_images * len(threshold_levels) * 2 * runs_per_threshold
     processed = 0
 
+    # Check if there are any images to process
+    if total_images == 0:
+        print("No images found in the folder!")
+        return pd.DataFrame()  # Return empty DataFrame instead of None
+
     for filename in image_files:
         print('\n' + '=' * 60)
         print(f"PROCESSING IMAGE: {filename}")
@@ -382,112 +387,127 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
                     # Start timing
                     start_time = time.time()
 
-                    meta_ga = MetaGeneticAlgorithm(image=image,
-                                                   num_thresholds=num_thresholds,
-                                                   fitness_function=fitness_function,
-                                                   seed=run_seed)
-                    best_config = meta_ga.evolve()
-                    print(f"  Best GA config: {best_config}")
+                    try:
+                        meta_ga = MetaGeneticAlgorithm(image=image,
+                                                       num_thresholds=num_thresholds,
+                                                       fitness_function=fitness_function,
+                                                       seed=run_seed)
+                        best_config = meta_ga.evolve()
+                        print(f"  Best GA config: {best_config}")
 
-                    ga = GeneticAlgorithm(
-                        image=image,
-                        num_thresholds=num_thresholds,
-                        objective=fitness_function,
-                        population_size=int(best_config['pop_size']),
-                        generations=int(best_config['max_generations']),
-                        crossover_rate=float(best_config['crossover_rate']),
-                        mutation_rate=float(best_config['mutation_rate']),
-                        tournament_size=3,
-                        seed=run_seed
-                    )
+                        ga = GeneticAlgorithm(
+                            image=image,
+                            num_thresholds=num_thresholds,
+                            objective=fitness_function,
+                            population_size=int(best_config['pop_size']),
+                            generations=int(best_config['max_generations']),
+                            crossover_rate=float(best_config['crossover_rate']),
+                            mutation_rate=float(best_config['mutation_rate']),
+                            tournament_size=3,
+                            seed=run_seed
+                        )
 
-                    best_solution, best_fitness = ga.evolve()
-                    execution_time_ms = (time.time() - start_time) * 1000
+                        best_solution, best_fitness = ga.evolve()
+                        execution_time_ms = (time.time() - start_time) * 1000
 
-                    thresholded_image = apply_thresholds(image, best_solution)
+                        thresholded_image = apply_thresholds(image, best_solution)
 
-                    # Use corrected metric functions
-                    mse_value = calculate_mse(image, thresholded_image)
-                    psnr_value = calculate_psnr(mse_value)
-                    ssim_value = calculate_ssim_value(image, thresholded_image)
-                    uniformity_value = calculate_uniformity(thresholded_image)
+                        # Use corrected metric functions
+                        mse_value = calculate_mse(image, thresholded_image)
+                        psnr_value = calculate_psnr(mse_value)
+                        ssim_value = calculate_ssim_value(image, thresholded_image)
+                        uniformity_value = calculate_uniformity(thresholded_image)
 
-                    # Validate metrics
-                    ssim_value, mse_value, psnr_value, uniformity_value = validate_metrics(
-                        ssim_value, mse_value, psnr_value, uniformity_value, filename
-                    )
+                        # Validate metrics
+                        ssim_value, mse_value, psnr_value, uniformity_value = validate_metrics(
+                            ssim_value, mse_value, psnr_value, uniformity_value, filename
+                        )
 
-                    threshold_str = f"[{', '.join(map(str, sorted(best_solution)))}]"
+                        threshold_str = f"[{', '.join(map(str, sorted(best_solution)))}]"
 
-                    # Format the results exactly as requested
-                    results.append({
-                        'image_name': filename,
-                        'fitness_function': fitness_function.capitalize(),  # Capitalize first letter
-                        'thresholding_level': num_thresholds,
-                        'threshold_value': threshold_str,
-                        'fitness_value': format_number(best_fitness, 8),  # 8 decimal places
-                        'SSIM': format_number(ssim_value, 7),  # 7 decimal places
-                        'MSE': format_number(mse_value, 7),  # 7 decimal places
-                        'PSNR': format_number(psnr_value, 7),  # 7 decimal places
-                        'Uniformity Measure': format_number(uniformity_value, 7),  # 7 decimal places
-                        'Random Seed': run_seed,
-                        'Execution Time (ms)': format_number(execution_time_ms, 2)  # 2 decimal places with comma
-                    })
+                        # Format the results exactly as requested
+                        results.append({
+                            'image_name': filename,
+                            'fitness_function': fitness_function.capitalize(),  # Capitalize first letter
+                            'thresholding_level': num_thresholds,
+                            'threshold_value': threshold_str,
+                            'fitness_value': format_number(best_fitness, 8),  # 8 decimal places
+                            'SSIM': format_number(ssim_value, 7),  # 7 decimal places
+                            'MSE': format_number(mse_value, 7),  # 7 decimal places
+                            'PSNR': format_number(psnr_value, 7),  # 7 decimal places
+                            'Uniformity Measure': format_number(uniformity_value, 7),  # 7 decimal places
+                            'Random Seed': run_seed,
+                            'Execution Time (ms)': format_number(execution_time_ms, 2)  # 2 decimal places with comma
+                        })
 
-                    print(
-                        f"  Completed. Fitness {best_fitness:.6f}, SSIM {ssim_value:.6f}, Time {execution_time_ms:.2f}ms, Seed {run_seed}")
+                        print(
+                            f"  Completed. Fitness {best_fitness:.6f}, SSIM {ssim_value:.6f}, Time {execution_time_ms:.2f}ms, Seed {run_seed}")
 
-                    # Save the thresholded image
-                    image_name_base = os.path.splitext(filename)[0]
-                    output_filename = f"{image_name_base}_{fitness_function}_{num_thresholds}_thresholds.png"
-                    output_image_path = os.path.join(images_folder, output_filename)
-                    cv2.imwrite(output_image_path, thresholded_image)
+                        # Save the thresholded image
+                        image_name_base = os.path.splitext(filename)[0]
+                        output_filename = f"{image_name_base}_{fitness_function}_{num_thresholds}_thresholds.png"
+                        output_image_path = os.path.join(images_folder, output_filename)
+                        cv2.imwrite(output_image_path, thresholded_image)
+
+                    except Exception as e:
+                        print(f"  ERROR processing {filename}: {str(e)}")
+                        continue
 
     # Create DataFrame with the exact column order
     df = pd.DataFrame(results)
 
-    # Reorder columns to match the desired format exactly
-    column_order = [
-        'image_name',
-        'fitness_function',
-        'thresholding_level',
-        'threshold_value',
-        'fitness_value',
-        'SSIM',
-        'MSE',
-        'PSNR',
-        'Uniformity Measure',
-        'Random Seed',
-        'Execution Time (ms)'
-    ]
+    # Only create Excel file if there are results
+    if len(results) > 0:
+        # Reorder columns to match the desired format exactly
+        column_order = [
+            'image_name',
+            'fitness_function',
+            'thresholding_level',
+            'threshold_value',
+            'fitness_value',
+            'SSIM',
+            'MSE',
+            'PSNR',
+            'Uniformity Measure',
+            'Random Seed',
+            'Execution Time (ms)'
+        ]
 
-    df = df[column_order]
+        df = df[column_order]
 
-    os.makedirs(output_path, exist_ok=True)
-    output_file = os.path.join(output_path, 'GAGA_Results_corrected.xlsx')
+        os.makedirs(output_path, exist_ok=True)
+        output_file = os.path.join(output_path, 'GAGA_Results_corrected.xlsx')
 
-    try:
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
-    except Exception:
-        df.to_excel(output_file, index=False)
+        try:
+            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            print(f"\nResults saved to {output_file}")
+        except Exception as e:
+            print(f"Error saving Excel file: {e}")
+            # Still return the DataFrame even if Excel save fails
 
-    # Print summary of metric ranges for verification
-    if results:
+        # Print summary of metric ranges for verification
         print("\n=== GAGA Metric Ranges Summary ===")
-        print(f"SSIM range: [{min(r['SSIM'] for r in results):.6f}, {max(r['SSIM'] for r in results):.6f}]")
-        print(f"MSE range: [{min(r['MSE'] for r in results):.2f}, {max(r['MSE'] for r in results):.2f}]")
-        print(f"PSNR range: [{min(r['PSNR'] for r in results):.2f}, {max(r['PSNR'] for r in results):.2f}]")
-        print(
-            f"Uniformity range: [{min(r['Uniformity Measure'] for r in results):.6f}, {max(r['Uniformity Measure'] for r in results):.6f}]")
 
-    print(f"\nResults saved to {output_file}")
-    return df
+        # Convert back to float for range calculation
+        ssim_values = [float(r['SSIM'].replace(',', '.')) for r in results]
+        mse_values = [float(r['MSE'].replace(',', '.')) for r in results]
+        psnr_values = [float(r['PSNR'].replace(',', '.')) for r in results]
+        uniformity_values = [float(r['Uniformity Measure'].replace(',', '.')) for r in results]
+
+        print(f"SSIM range: [{min(ssim_values):.6f}, {max(ssim_values):.6f}]")
+        print(f"MSE range: [{min(mse_values):.2f}, {max(mse_values):.2f}]")
+        print(f"PSNR range: [{min(psnr_values):.2f}, {max(psnr_values):.2f}]")
+        print(f"Uniformity range: [{min(uniformity_values):.6f}, {max(uniformity_values):.6f}]")
+    else:
+        print("No results were generated!")
+
+    return df  # Always return the DataFrame (even if empty)
 
 
 if __name__ == '__main__':
     folder_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results_corrected_GAGA"
+    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
     quick_test = True
 
     if quick_test:
@@ -507,10 +527,15 @@ if __name__ == '__main__':
     results_df = process_images_in_folder(folder_path, threshold_levels, output_path, runs_per_threshold)
 
     print('\nProcessing completed')
-    print(f"Total results: {len(results_df)}")
 
-    for fitness_func in ['kapur', 'otsu']:
-        for threshold in threshold_levels:
-            count = len(results_df[(results_df['fitness_function'] == fitness_func.capitalize()) &
-                                   (results_df['thresholding_level'] == threshold)])
-            print(f"{fitness_func.capitalize()} with {threshold} thresholds: {count} runs")
+    # Check if results_df is not None and not empty
+    if results_df is not None and len(results_df) > 0:
+        print(f"Total results: {len(results_df)}")
+
+        for fitness_func in ['kapur', 'otsu']:
+            for threshold in threshold_levels:
+                count = len(results_df[(results_df['fitness_function'] == fitness_func.capitalize()) &
+                                       (results_df['thresholding_level'] == threshold)])
+                print(f"{fitness_func.capitalize()} with {threshold} thresholds: {count} runs")
+    else:
+        print("No results were generated!")
