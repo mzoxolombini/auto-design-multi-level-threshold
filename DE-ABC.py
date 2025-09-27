@@ -203,17 +203,6 @@ def apply_thresholds(image, thresholds):
     return segmented
 
 
-def format_number(value, decimals=8):
-    """Format number with specified decimal places."""
-    if isinstance(value, (int, np.integer)):
-        return str(value)
-    if np.isinf(value):
-        return "Infinity"
-    if np.isnan(value):
-        return "NaN"
-    return f"{value:.{decimals}f}"
-
-
 # ===============================
 # Artificial Bee Colony Algorithm
 # ===============================
@@ -491,6 +480,8 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
         mse_value = calculate_mse(image, segmented_image)
         psnr_value = calculate_psnr(image, segmented_image)
         uniformity = calculate_uniformity_measure(segmented_image, best_thresholds)
+
+        # Format threshold values exactly as requested
         threshold_value_str = "[" + ", ".join(map(str, best_thresholds)) + "]"
 
         if images_folder:
@@ -502,9 +493,10 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
         print(f"[DONE] {file_name} | {func_name} | thresholds={num_thresholds} | "
               f"fitness={best_score:.4f} | time={execution_time_ms:.2f}ms")
 
+        # Return results in exact format as requested
         return {
             "image_name": file_name,
-            "fitness_function": func_name.capitalize(),
+            "fitness_function": func_name,  # Keep as lowercase to match example
             "thresholding_level": num_thresholds,
             "threshold_value": threshold_value_str,
             "fitness_value": best_score,
@@ -512,7 +504,7 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
             "MSE": mse_value,
             "PSNR": psnr_value,
             "Uniformity Measure": uniformity,
-            "Random Seed": run_seed,
+            "Seed": run_seed,  # Changed from "Random Seed" to "Seed"
             "Execution Time (ms)": execution_time_ms
         }
 
@@ -620,6 +612,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
     if valid_results:
         df = pd.DataFrame(valid_results)
 
+        # Exact column order and names as requested
         column_order = [
             'image_name',
             'fitness_function',
@@ -630,7 +623,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
             'MSE',
             'PSNR',
             'Uniformity Measure',
-            'Random Seed',
+            'Seed',
             'Execution Time (ms)'
         ]
 
@@ -640,6 +633,25 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
                 df[col] = None
 
         df = df[column_order]
+
+        # Format numeric columns to match the example precision
+        if 'fitness_value' in df.columns:
+            df['fitness_value'] = df['fitness_value'].apply(lambda x: f"{x:.8f}" if pd.notna(x) else x)
+
+        if 'SSIM' in df.columns:
+            df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:.6f}" if pd.notna(x) else x)
+
+        if 'MSE' in df.columns:
+            df['MSE'] = df['MSE'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else x)
+
+        if 'PSNR' in df.columns:
+            df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else x)
+
+        if 'Uniformity Measure' in df.columns:
+            df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:.6f}" if pd.notna(x) else x)
+
+        if 'Execution Time (ms)' in df.columns:
+            df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else x)
 
         # Save the results
         if safe_save_excel(df, output_file):
@@ -653,12 +665,15 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
         # Display summary statistics
         print("\nSummary Statistics:")
-        numeric_columns = ['SSIM', 'PSNR', 'MSE', 'Uniformity Measure', 'fitness_value']
+        numeric_columns = ['fitness_value', 'SSIM', 'PSNR', 'MSE', 'Uniformity Measure']
         for col in numeric_columns:
             if col in df.columns and df[col].notna().any():
-                col_data = pd.to_numeric(df[col], errors='coerce').dropna()
-                if len(col_data) > 0:
-                    print(f"{col} value range: [{col_data.min():.6f} - {col_data.max():.6f}]")
+                try:
+                    col_data = pd.to_numeric(df[col], errors='coerce').dropna()
+                    if len(col_data) > 0:
+                        print(f"{col} value range: [{col_data.min():.6f} - {col_data.max():.6f}]")
+                except:
+                    pass
 
     else:
         print("No valid results to save")
@@ -679,7 +694,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 if __name__ == "__main__":
     # Configuration with your specific paths
     folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
-    levels = [2, 3, 4]
+    levels = [2, 3]
     output_dir = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
 
     # Create results directory
@@ -704,6 +719,10 @@ if __name__ == "__main__":
             images_folder = os.path.join(output_dir, "imagesPerThresholdLevel_DEABC")
             print(f"Results saved to: {output_file}")
             print(f"Segmented images saved to: {images_folder}")
+
+            # Print first few rows to verify format
+            print("\nFirst few rows of results:")
+            print(df.head().to_string(index=False))
         else:
             print("Processing completed with errors!")
     except Exception as e:
