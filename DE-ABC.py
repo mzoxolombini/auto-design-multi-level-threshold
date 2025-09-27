@@ -25,16 +25,17 @@ def calculate_histogram(image):
 
 
 def kapur_entropy(hist, thresholds):
-    """Compute Kapur's entropy for given thresholds (corrected)."""
     if len(thresholds) == 0:
         return 0.0
 
-    thresholds = sorted(thresholds)
-    bins = [0] + thresholds + [len(hist)]
+    thresholds = sorted([int(round(t)) for t in thresholds])
+    bins = [0] + thresholds + [256]  # Changed from len(hist) to 256
     total_entropy = 0.0
 
     # Precompute cumulative sums
     cumulative = np.cumsum(hist)
+    # Add a 0 at the beginning to handle index 0 correctly
+    cumulative = np.concatenate(([0], cumulative))
 
     for i in range(len(bins) - 1):
         start = bins[i]
@@ -44,7 +45,8 @@ def kapur_entropy(hist, thresholds):
             continue
 
         class_hist = hist[start:end]
-        prob_sum = cumulative[end - 1] - (cumulative[start - 1] if start > 0 else 0)
+        # Use cumulative array with proper indexing
+        prob_sum = cumulative[end] - cumulative[start]
 
         if prob_sum > 1e-10:
             # Remove zero probabilities to avoid log(0)
@@ -59,22 +61,24 @@ def kapur_entropy(hist, thresholds):
 
 
 def otsu_between_class_variance(hist, thresholds):
-    """Compute Otsu's between-class variance for given thresholds (corrected)."""
     if len(thresholds) == 0:
         return 0.0
 
-    thresholds = sorted(thresholds)
-    bins = [0] + thresholds + [len(hist)]
+    thresholds = sorted([int(round(t)) for t in thresholds])
+    bins = [0] + thresholds + [256]  # Changed from len(hist) to 256
 
     total_weight = np.sum(hist)
     if total_weight == 0:
         return 0.0
 
-    global_mean = np.sum(np.arange(len(hist)) * hist) / total_weight
+    global_mean = np.sum(np.arange(256) * hist) / total_weight  # Fixed: use 256 instead of len(hist)
     between_class_variance = 0.0
 
     cumulative = np.cumsum(hist)
-    mean_cumulative = np.cumsum(np.arange(len(hist)) * hist)
+    cumulative = np.concatenate(([0], cumulative))  # Add 0 at beginning
+
+    mean_cumulative = np.cumsum(np.arange(256) * hist)  # Fixed: use 256 instead of len(hist)
+    mean_cumulative = np.concatenate(([0], mean_cumulative))  # Add 0 at beginning
 
     for i in range(len(bins) - 1):
         start = bins[i]
@@ -83,10 +87,10 @@ def otsu_between_class_variance(hist, thresholds):
         if start >= end:  # Skip invalid ranges
             continue
 
-        w = cumulative[end - 1] - (cumulative[start - 1] if start > 0 else 0)
+        w = cumulative[end] - cumulative[start]  # Fixed indexing
 
         if w > 1e-10:
-            m_sum = mean_cumulative[end - 1] - (mean_cumulative[start - 1] if start > 0 else 0)
+            m_sum = mean_cumulative[end] - mean_cumulative[start]  # Fixed indexing
             m = m_sum / w
             between_class_variance += w * (m - global_mean) ** 2
 
@@ -490,14 +494,15 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
             "fitness_function": func_name.capitalize(),
             "thresholding_level": num_thresholds,
             "threshold_value": threshold_value_str,
-            "fitness_value": format_number(best_score, 8),
-            "SSIM": format_number(ssim_value, 7),
-            "MSE": format_number(mse_value, 7),
-            "PSNR": format_number(psnr_value, 7),
-            "Uniformity Measure": format_number(uniformity, 7),
+            "fitness_value": best_score,
+            "SSIM": ssim_value,
+            "MSE": mse_value,
+            "PSNR": psnr_value,
+            "Uniformity Measure": uniformity,
             "Random Seed": run_seed,
-            "Execution Time (ms)": format_number(execution_time_ms, 2)
+            "Execution Time (ms)": execution_time_ms
         }
+
 
     except Exception as e:
         print(f"[ERROR] Processing {file_name} | {func_name}: {str(e)}")
@@ -598,14 +603,14 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
 if __name__ == "__main__":
     # Configuration
-    folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    levels = [2, 3, 4, 5]  # Reduced for testing, can expand to [2, 3, 4, 5, 6, 7, 8, 9, 10]
-    output_dir = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    folder = r"C:\Users\mzoxo\OneDrive\Documents\test_images"
+    levels = [2, 3]  # Start with fewer levels for testing
+    output_dir = r"C:\Users\mzoxo\OneDrive\Documents\test_images\results"
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, "DEABC_results.xlsx")
 
     # Process images
-    df = process_images_in_folder(folder, levels, output_file, n_jobs=-1, seed=None)
+    df = process_images_in_folder(folder, levels, output_file, n_jobs=1, seed=None)  # Use n_jobs=1 for debugging
 
     if not df.empty:
         print("\nProcessing completed successfully!")
