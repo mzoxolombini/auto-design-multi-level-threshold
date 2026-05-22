@@ -12,25 +12,30 @@ Multi-level thresholding segments a grayscale image into multiple regions by fin
 
 ## Algorithms
 
-### Standalone Algorithms
+The results in `MLT_spreadsheet_results_complete.xlsx` are organized into two search categories:
+
+- **Single-Point Search**: Optimizers update one candidate solution at a time (or apply local refinement around a current best candidate).
+- **Multi-Point Search**: Optimizers evolve or coordinate populations of candidate solutions across multiple points in the search space.
+
+### Single-Point Search
 
 | File | Algorithm | Description |
 |---|---|---|
-| `abc_multilevel_thresholding.py` | **ABC** – Artificial Bee Colony | Simulates foraging behaviour of honey bees. Employed, onlooker, and scout bees cooperate to search for optimal thresholds. |
-| `ga_multilevel_thresholding.py` | **GA** – Genetic Algorithm | Evolves a population of candidate threshold sets using tournament selection, single-point crossover, and random mutation. |
+| `single_point/ga_multilevel_thresholding.py` | **GA** – Genetic Algorithm | Evolves a population of candidate threshold sets using tournament selection, single-point crossover, and random mutation. |
+| `single_point/abc_multilevel_thresholding.py` | **ABC** – Artificial Bee Colony | Simulates foraging behaviour of honey bees. Employed, onlooker, and scout bees cooperate to search for optimal thresholds. |
+| `single_point/ils_ga_multilevel_thresholding.py` | **ILSGA** | GA with an integrated ILS perturbation strategy and early-stopping. |
+| `single_point/ils_abc_multilevel_thresholding.py` | **ILSABC** | ABC is followed by an Iterated Local Search (ILS) phase that refines and perturbs the best solution to escape local optima. |
+| `single_point/sa_ga_multilevel_thresholding.py` | **SAGA** | GA with Simulated Annealing applied at each generation to refine the best solution found. |
+| `single_point/sa_optimized_abc_thresholding.py` | **SAABC** | Simulated Annealing tunes ABC hyperparameters (population size, iterations, limit) before running the final ABC. |
 
-### Hybrid / Meta-Optimized Algorithms
+### Multi-Point Search
 
 | File | Algorithm | Description |
 |---|---|---|
-| `de_optimized_abc_thresholding.py` | **DE → ABC** | Differential Evolution optimizes the ABC colony parameters before running the ABC algorithm. |
-| `de_optimized_ga_thresholding.py` | **DE → GA** | Differential Evolution optimizes GA hyperparameters (population size, crossover rate, mutation rate, generations). |
-| `ga_optimized_abc_thresholding.py` | **GA → ABC** | A GA-configured ABC runs a pure Artificial Bee Colony with parameters informed by a GA-style configuration. |
-| `meta_ga_optimized_ga_thresholding.py` | **Meta-GA → GA** | A Meta-Genetic Algorithm evolves GA hyperparameters; the best configuration is then used to run the final GA. |
-| `ils_abc_multilevel_thresholding.py` | **ILS + ABC** | ABC is followed by an Iterated Local Search (ILS) phase that refines and perturbs the best solution to escape local optima. |
-| `ils_ga_multilevel_thresholding.py` | **ILS + GA** | GA with an integrated ILS perturbation strategy and early-stopping. |
-| `sa_optimized_abc_thresholding.py` | **SA → ABC** | Simulated Annealing tunes ABC hyperparameters (population size, iterations, limit) before running the final ABC. |
-| `sa_ga_multilevel_thresholding.py` | **SA + GA** | GA with Simulated Annealing applied at each generation to refine the best solution found. |
+| `multi_point/meta_ga_optimized_ga_thresholding.py` | **GAGA** | A Meta-Genetic Algorithm evolves GA hyperparameters; the best configuration is then used to run the final GA. |
+| `multi_point/ga_optimized_abc_thresholding.py` | **GAABC** | A GA-configured ABC runs a pure Artificial Bee Colony with parameters informed by a GA-style configuration. |
+| `multi_point/de_optimized_ga_thresholding.py` | **DEGA** | Differential Evolution optimizes GA hyperparameters (population size, crossover rate, mutation rate, generations). |
+| `multi_point/de_optimized_abc_thresholding.py` | **DEABC** | Differential Evolution optimizes the ABC colony parameters before running the ABC algorithm. |
 
 ---
 
@@ -76,8 +81,16 @@ output_path = r"path/to/your/results"
 Then run the script directly:
 
 ```bash
-python abc_multilevel_thresholding.py
-python ga_multilevel_thresholding.py
+python single_point/abc_multilevel_thresholding.py
+python single_point/ga_multilevel_thresholding.py
+python single_point/ils_ga_multilevel_thresholding.py
+python single_point/ils_abc_multilevel_thresholding.py
+python single_point/sa_ga_multilevel_thresholding.py
+python single_point/sa_optimized_abc_thresholding.py
+python multi_point/meta_ga_optimized_ga_thresholding.py
+python multi_point/ga_optimized_abc_thresholding.py
+python multi_point/de_optimized_ga_thresholding.py
+python multi_point/de_optimized_abc_thresholding.py
 # ... etc.
 ```
 
