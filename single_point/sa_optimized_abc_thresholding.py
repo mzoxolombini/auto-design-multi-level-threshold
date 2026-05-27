@@ -35,29 +35,43 @@ def apply_thresholds_optimized(image, thresholds):
     return output
 
 
-def kapur_entropy_optimized(image, thresholds, hist=None, prob=None):
-    """OPTIMIZED Kapur's entropy with pre-calculated histogram"""
-    if hist is None or prob is None:
-        hist, _ = np.histogram(image.flatten(), bins=256, range=(0, 256))
-        total_pixels = np.sum(hist)
-        prob = hist.astype(float) / total_pixels
+def compute_2d_histogram(image, kernel_size=3):
+    """Compute the joint 2D histogram of (pixel intensity, local neighborhood mean)."""
+    local_mean = cv2.boxFilter(image.astype(np.float32), -1, (kernel_size, kernel_size))
+    local_mean = np.clip(np.round(local_mean), 0, 255).astype(np.int32)
+    flat_intensity = image.ravel().astype(np.int32)
+    flat_mean = local_mean.ravel()
+    hist_2d = np.zeros((256, 256), dtype=np.float64)
+    np.add.at(hist_2d, (flat_intensity, flat_mean), 1)
+    total = hist_2d.sum()
+    if total > 0:
+        hist_2d /= total
+    return hist_2d
 
+
+def renyi_entropy_region(p_region, q=2):
+    """Compute Rényi entropy of order q for a 2D probability sub-region."""
+    p_flat = p_region.ravel()
+    p_flat = p_flat[p_flat > 1e-12]
+    if len(p_flat) == 0:
+        return 0.0
+    p_norm = p_flat / p_flat.sum()
+    if q == 1:
+        return float(-np.sum(p_norm * np.log(p_norm)))
+    return float((1.0 / (1.0 - q)) * np.log(np.sum(p_norm ** q)))
+
+
+def calculate_renyi_entropy_2d(image, thresholds, q=2, kernel_size=3):
+    """2D Rényi entropy (order q=2) objective function for multilevel thresholding."""
     thresholds = sorted(thresholds)
-    class_boundaries = [0] + thresholds + [256]
+    boundaries = [0] + thresholds + [256]
+    hist_2d = compute_2d_histogram(image, kernel_size)
     total_entropy = 0.0
-
-    for i in range(len(class_boundaries) - 1):
-        start, end = class_boundaries[i], class_boundaries[i + 1]
-        class_probs = prob[start:end]
-        class_probs = class_probs[class_probs > 0]
-
-        if len(class_probs) > 0:
-            class_prob_sum = np.sum(class_probs)
-            if class_prob_sum > 0:
-                normalized_probs = class_probs / class_prob_sum
-                class_entropy = -np.sum(normalized_probs * np.log(normalized_probs))
-                total_entropy += class_entropy
-
+    for i in range(len(boundaries) - 1):
+        for j in range(len(boundaries) - 1):
+            region = hist_2d[boundaries[i]:boundaries[i + 1],
+                             boundaries[j]:boundaries[j + 1]]
+            total_entropy += renyi_entropy_region(region, q)
     return total_entropy
 
 
@@ -155,8 +169,8 @@ class ABC_Optimized:
         return population
 
     def evaluate_optimized(self, solution):
-        """Use pre-calculated histogram for faster evaluation"""
-        return self.obj_func(self.image, solution, self.hist, self.prob)
+        """Evaluate solution using 2D Rényi entropy."""
+        return self.obj_func(self.image, solution)
 
     def evolve_optimized(self):
         """Optimized ABC evolution"""
@@ -347,13 +361,13 @@ def process_single_image_optimized(args):
 
         image_results = []
 
-        def kapur_wrapper(img, thresh, h=None, p=None):
-            return kapur_entropy_optimized(img, thresh, h, p)
+        def renyi_2d_wrapper(img, thresh):
+            return calculate_renyi_entropy_2d(img, thresh)
 
         def otsu_wrapper(img, thresh, h=None, p=None):
             return otsu_variance_optimized(img, thresh, h, p)
 
-        for method, obj_func in [("kapur", kapur_wrapper), ("otsu", otsu_wrapper)]:
+        for method, obj_func in [("renyi_2d", renyi_2d_wrapper), ("otsu", otsu_wrapper)]:
             for m in threshold_levels:
                 start_time = time.time()
                 run_seed = int((start_time * 10000) % 1000000) + 1
@@ -393,8 +407,8 @@ def process_single_image_optimized(args):
                     ssim_value, mse_value, psnr_value, uniformity, filename
                 )
 
-                # Calculate both fitness values using pre-calculated histogram
-                kapur_value = kapur_entropy_optimized(image, best_sol, hist, prob)
+                # Calculate both fitness values
+                renyi_2d_value = calculate_renyi_entropy_2d(image, best_sol)
                 otsu_value = otsu_variance_optimized(image, best_sol, hist, prob)
 
                 threshold_str = f"[{', '.join(map(str, best_sol))}]"
@@ -405,7 +419,7 @@ def process_single_image_optimized(args):
                     "thresholding_level": m,
                     "threshold_value": threshold_str,
                     "fitness_value": best_fit,
-                    "Kapur_Value": kapur_value,
+                    "Renyi2D_Value": renyi_2d_value,
                     "Otsu_Value": otsu_value,
                     "SSIM": ssim_value,
                     "MSE": mse_value,
@@ -475,7 +489,7 @@ def save_results_optimized(results, output_path):
     # Format numeric columns efficiently
     numeric_columns = {
         'fitness_value': "{:.8f}",
-        'Kapur_Value': "{:.8f}",
+        'Renyi2D_Value': "{:.8f}",
         'Otsu_Value': "{:.8f}",
         'SSIM': "{:.6f}",
         'MSE': "{:.2f}",
@@ -525,11 +539,11 @@ def validate_functions_optimized():
     total_pixels = np.sum(hist)
     prob = hist.astype(float) / total_pixels
 
-    kapur_val = kapur_entropy_optimized(test_image, thresholds, hist, prob)
+    renyi_2d_val = calculate_renyi_entropy_2d(test_image, thresholds)
     otsu_val = otsu_variance_optimized(test_image, thresholds, hist, prob)
 
     print(f"Validation completed successfully")
-    print(f"Kapur entropy: {kapur_val:.6f}")
+    print(f"2D Rényi entropy: {renyi_2d_val:.6f}")
     print(f"Otsu variance: {otsu_val:.6f}")
 
     return True

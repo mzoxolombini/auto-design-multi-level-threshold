@@ -68,28 +68,44 @@ def validate_metrics(ssim_val, mse_val, psnr_val, uniformity_val, filename=""):
     return ssim_val, mse_val, psnr_val, uniformity_val
 
 
-# Kapur entropy
-def calculate_entropy(hist, thresholds):
-    thresholds = sorted(thresholds)
-    total = np.sum(hist)
-    if total == 0:
+def compute_2d_histogram(image, kernel_size=3):
+    """Compute the joint 2D histogram of (pixel intensity, local neighborhood mean)."""
+    local_mean = cv2.boxFilter(image.astype(np.float32), -1, (kernel_size, kernel_size))
+    local_mean = np.clip(np.round(local_mean), 0, 255).astype(np.int32)
+    flat_intensity = image.ravel().astype(np.int32)
+    flat_mean = local_mean.ravel()
+    hist_2d = np.zeros((256, 256), dtype=np.float64)
+    np.add.at(hist_2d, (flat_intensity, flat_mean), 1)
+    total = hist_2d.sum()
+    if total > 0:
+        hist_2d /= total
+    return hist_2d
+
+
+def renyi_entropy_region(p_region, q=2):
+    """Compute Rényi entropy of order q for a 2D probability sub-region."""
+    p_flat = p_region.ravel()
+    p_flat = p_flat[p_flat > 1e-12]
+    if len(p_flat) == 0:
         return 0.0
-    probs = hist / total
+    p_norm = p_flat / p_flat.sum()
+    if q == 1:
+        return float(-np.sum(p_norm * np.log(p_norm)))
+    return float((1.0 / (1.0 - q)) * np.log(np.sum(p_norm ** q)))
 
-    entropies = []
-    prev = 0
-    for t in thresholds + [len(hist)]:
-        class_probs = probs[prev:t]
-        class_sum = np.sum(class_probs)
-        if class_sum > 0:
-            parts = class_probs / class_sum
-            ent = -np.sum(parts * np.log(parts + 1e-10))
-            entropies.append(ent)
-        else:
-            entropies.append(0.0)
-        prev = t
 
-    return float(np.sum(entropies))
+def calculate_renyi_entropy_2d(image, thresholds, q=2, kernel_size=3):
+    """2D Rényi entropy (order q=2) objective function for multilevel thresholding."""
+    thresholds = sorted(thresholds)
+    boundaries = [0] + thresholds + [256]
+    hist_2d = compute_2d_histogram(image, kernel_size)
+    total_entropy = 0.0
+    for i in range(len(boundaries) - 1):
+        for j in range(len(boundaries) - 1):
+            region = hist_2d[boundaries[i]:boundaries[i + 1],
+                             boundaries[j]:boundaries[j + 1]]
+            total_entropy += renyi_entropy_region(region, q)
+    return total_entropy
 
 
 # Otsu between-class variance
@@ -165,8 +181,8 @@ class GeneticAlgorithm:
                 for _ in range(self.population_size)]
 
     def fitness(self, individual):
-        if self.objective == 'kapur':
-            return calculate_entropy(self.hist, individual)
+        if self.objective == 'renyi_2d':
+            return calculate_renyi_entropy_2d(self.image, individual)
         elif self.objective == 'otsu':
             return calculate_otsu(self.hist, individual)
         raise ValueError('Unknown fitness function')
@@ -245,7 +261,7 @@ class GeneticAlgorithm:
 
 
 class MetaGeneticAlgorithm:
-    def __init__(self, image, num_thresholds, fitness_function='kapur', seed=None):
+    def __init__(self, image, num_thresholds, fitness_function='renyi_2d', seed=None):
         self.pop_size = 8
         self.max_generations = 4
         self.seed = seed
@@ -372,7 +388,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, runs_pe
         # Calculate histogram once for the image
         hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
 
-        for fitness_function in ['kapur', 'otsu']:
+        for fitness_function in ['renyi_2d', 'otsu']:
             for num_thresholds in threshold_levels:
                 for run in range(runs_per_threshold):
                     processed += 1
@@ -532,10 +548,10 @@ if __name__ == '__main__':
     if results_df is not None and len(results_df) > 0:
         print(f"Total results: {len(results_df)}")
 
-        for fitness_func in ['kapur', 'otsu']:
+        for fitness_func in ['renyi_2d', 'otsu']:
             for threshold in threshold_levels:
-                count = len(results_df[(results_df['fitness_function'] == fitness_func.capitalize()) &
+                count = len(results_df[(results_df['fitness_function'] == fitness_func) &
                                        (results_df['thresholding_level'] == threshold)])
-                print(f"{fitness_func.capitalize()} with {threshold} thresholds: {count} runs")
+                print(f"{fitness_func} with {threshold} thresholds: {count} runs")
     else:
         print("No results were generated!")
