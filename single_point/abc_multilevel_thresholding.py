@@ -10,32 +10,45 @@ import random
 import time
 
 
-# Fitness functions
+# 2D Rényi Entropy (order q=2) objective function
+def compute_2d_histogram(image, kernel_size=3):
+    """Compute the joint 2D histogram of (pixel intensity, local neighborhood mean)."""
+    local_mean = cv2.boxFilter(image.astype(np.float32), -1, (kernel_size, kernel_size))
+    local_mean = np.clip(np.round(local_mean), 0, 255).astype(np.int32)
+    flat_intensity = image.ravel().astype(np.int32)
+    flat_mean = local_mean.ravel()
+    hist_2d = np.zeros((256, 256), dtype=np.float64)
+    np.add.at(hist_2d, (flat_intensity, flat_mean), 1)
+    total = hist_2d.sum()
+    if total > 0:
+        hist_2d /= total
+    return hist_2d
 
-# Kapur's Entropy Calculation (no normalization)
-def calculate_entropy(hist, thresholds):
+
+def renyi_entropy_region(p_region, q=2):
+    """Compute Rényi entropy of order q for a 2D probability sub-region."""
+    p_flat = p_region.ravel()
+    p_flat = p_flat[p_flat > 1e-12]
+    if len(p_flat) == 0:
+        return 0.0
+    p_norm = p_flat / p_flat.sum()
+    if q == 1:
+        return float(-np.sum(p_norm * np.log(p_norm)))
+    return float((1.0 / (1.0 - q)) * np.log(np.sum(p_norm ** q)))
+
+
+def calculate_renyi_entropy_2d(image, thresholds, q=2, kernel_size=3):
+    """2D Rényi entropy (order q=2) objective function for multilevel thresholding."""
     thresholds = sorted(thresholds)
-    total = np.sum(hist)
-    if total == 0:
-        return 0
-
-    probs = hist / total
-    entropies = []
-    prev_threshold = 0
-
-    for threshold in thresholds + [len(hist)]:
-        class_probs = probs[prev_threshold:threshold]
-        class_sum = np.sum(class_probs)
-        if class_sum > 0:
-            class_entropy = -np.sum(
-                (class_probs / class_sum) * np.log(class_probs / class_sum + 1e-12)
-            )
-            entropies.append(class_entropy)
-        else:
-            entropies.append(0)
-        prev_threshold = threshold
-
-    return np.sum(entropies)
+    boundaries = [0] + thresholds + [256]
+    hist_2d = compute_2d_histogram(image, kernel_size)
+    total_entropy = 0.0
+    for i in range(len(boundaries) - 1):
+        for j in range(len(boundaries) - 1):
+            region = hist_2d[boundaries[i]:boundaries[i + 1],
+                             boundaries[j]:boundaries[j + 1]]
+            total_entropy += renyi_entropy_region(region, q)
+    return total_entropy
 
 
 # Otsu's Between-Class Variance Calculation (no normalization)
@@ -206,9 +219,8 @@ def abc_algorithm(image, num_thresholds, fitness_function, colony_size=50, max_c
 
 
 # Define fitness functions
-def kapur_entropy(image, thresholds):
-    hist, _ = np.histogram(image, bins=256, range=(0, 256))
-    return calculate_entropy(hist, thresholds)
+def renyi_2d_fitness(image, thresholds):
+    return calculate_renyi_entropy_2d(image, thresholds)
 
 
 def otsu_fitness(image, thresholds):
@@ -241,7 +253,7 @@ def main():
         if len(image.shape) == 3:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        for fitness_function_name in ["kapur", "otsu"]:
+        for fitness_function_name in ["renyi_2d", "otsu"]:
             for num_thresholds in threshold_levels:
                 # Generate and Set the Seed for this specific run
                 start_time = time.time()
@@ -252,9 +264,9 @@ def main():
                 print(
                     f"--- Starting Experiment for {image_file} {fitness_function_name} {num_thresholds} with Seed: {run_seed} ---")
 
-                if fitness_function_name == "kapur":
+                if fitness_function_name == "renyi_2d":
                     thresholds, fitness_value = abc_algorithm(
-                        image, num_thresholds, kapur_entropy, colony_size=30, max_cycles=100, limit=50
+                        image, num_thresholds, renyi_2d_fitness, colony_size=30, max_cycles=100, limit=50
                     )
                 else:  # otsu
                     thresholds, fitness_value = abc_algorithm(

@@ -24,33 +24,43 @@ def calculate_histogram(image):
     return hist / total
 
 
-def kapur_entropy(hist, thresholds):
-    """Calculate Kapur's entropy for multilevel thresholding."""
-    if len(thresholds) == 0:
+def compute_2d_histogram(image, kernel_size=3):
+    """Compute the joint 2D histogram of (pixel intensity, local neighborhood mean)."""
+    local_mean = cv2.boxFilter(image.astype(np.float32), -1, (kernel_size, kernel_size))
+    local_mean = np.clip(np.round(local_mean), 0, 255).astype(np.int32)
+    flat_intensity = image.ravel().astype(np.int32)
+    flat_mean = local_mean.ravel()
+    hist_2d = np.zeros((256, 256), dtype=np.float64)
+    np.add.at(hist_2d, (flat_intensity, flat_mean), 1)
+    total = hist_2d.sum()
+    if total > 0:
+        hist_2d /= total
+    return hist_2d
+
+
+def renyi_entropy_region(p_region, q=2):
+    """Compute Rényi entropy of order q for a 2D probability sub-region."""
+    p_flat = p_region.ravel()
+    p_flat = p_flat[p_flat > 1e-12]
+    if len(p_flat) == 0:
         return 0.0
+    p_norm = p_flat / p_flat.sum()
+    if q == 1:
+        return float(-np.sum(p_norm * np.log(p_norm)))
+    return float((1.0 / (1.0 - q)) * np.log(np.sum(p_norm ** q)))
 
+
+def calculate_renyi_entropy_2d(image, thresholds, q=2, kernel_size=3):
+    """2D Rényi entropy (order q=2) objective function for multilevel thresholding."""
     thresholds = sorted(thresholds)
-    bins = [0] + thresholds + [256]
+    boundaries = [0] + thresholds + [256]
+    hist_2d = compute_2d_histogram(image, kernel_size)
     total_entropy = 0.0
-
-    for i in range(len(bins) - 1):
-        start = int(bins[i])
-        end = int(bins[i + 1])
-
-        if start >= end:
-            continue
-
-        class_hist = hist[start:end]
-        class_sum = np.sum(class_hist)
-
-        if class_sum > 1e-10:
-            class_probs = class_hist / class_sum
-            class_probs_nonzero = class_probs[class_probs > 1e-10]
-
-            if len(class_probs_nonzero) > 0:
-                entropy_val = -np.sum(class_probs_nonzero * np.log(class_probs_nonzero))
-                total_entropy += entropy_val
-
+    for i in range(len(boundaries) - 1):
+        for j in range(len(boundaries) - 1):
+            region = hist_2d[boundaries[i]:boundaries[i + 1],
+                             boundaries[j]:boundaries[j + 1]]
+            total_entropy += renyi_entropy_region(region, q)
     return total_entropy
 
 
@@ -376,7 +386,12 @@ def process_single(file_name, folder_path, num_thresholds, func_name, seed=None,
         print(f"[START] Processing {file_name} | {func_name} | thresholds={num_thresholds}")
 
         hist = calculate_histogram(image)
-        fitness_function = kapur_entropy if func_name == "kapur" else otsu_between_class_variance
+        if func_name == "renyi_2d":
+            _image = image
+            def fitness_function(hist, thresholds, _img=_image):
+                return calculate_renyi_entropy_2d(_img, thresholds)
+        else:
+            fitness_function = otsu_between_class_variance
 
         # ABC parameters from literature (typical values)
         config = {
@@ -507,7 +522,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
     all_results = []
 
     for file_name in files:
-        for func_name in ["kapur", "otsu"]:
+        for func_name in ["renyi_2d", "otsu"]:
             # Process all threshold levels for this image-function combination
             for num_thresholds in threshold_levels:
                 result = process_single(file_name, folder_path, num_thresholds, func_name, seed, images_folder)

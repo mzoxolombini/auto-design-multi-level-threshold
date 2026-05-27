@@ -24,33 +24,43 @@ def calculate_histogram(image):
     return hist / total
 
 
-def kapur_entropy(hist, thresholds):
-    """Calculate Kapur's entropy for multilevel thresholding."""
-    if len(thresholds) == 0:
+def compute_2d_histogram(image, kernel_size=3):
+    """Compute the joint 2D histogram of (pixel intensity, local neighborhood mean)."""
+    local_mean = cv2.boxFilter(image.astype(np.float32), -1, (kernel_size, kernel_size))
+    local_mean = np.clip(np.round(local_mean), 0, 255).astype(np.int32)
+    flat_intensity = image.ravel().astype(np.int32)
+    flat_mean = local_mean.ravel()
+    hist_2d = np.zeros((256, 256), dtype=np.float64)
+    np.add.at(hist_2d, (flat_intensity, flat_mean), 1)
+    total = hist_2d.sum()
+    if total > 0:
+        hist_2d /= total
+    return hist_2d
+
+
+def renyi_entropy_region(p_region, q=2):
+    """Compute Rényi entropy of order q for a 2D probability sub-region."""
+    p_flat = p_region.ravel()
+    p_flat = p_flat[p_flat > 1e-12]
+    if len(p_flat) == 0:
         return 0.0
+    p_norm = p_flat / p_flat.sum()
+    if q == 1:
+        return float(-np.sum(p_norm * np.log(p_norm)))
+    return float((1.0 / (1.0 - q)) * np.log(np.sum(p_norm ** q)))
 
+
+def calculate_renyi_entropy_2d(image, thresholds, q=2, kernel_size=3):
+    """2D Rényi entropy (order q=2) objective function for multilevel thresholding."""
     thresholds = sorted(thresholds)
-    bins = [0] + thresholds + [256]
+    boundaries = [0] + thresholds + [256]
+    hist_2d = compute_2d_histogram(image, kernel_size)
     total_entropy = 0.0
-
-    for i in range(len(bins) - 1):
-        start = int(bins[i])
-        end = int(bins[i + 1])
-
-        if start >= end:
-            continue
-
-        class_hist = hist[start:end]
-        class_sum = np.sum(class_hist)
-
-        if class_sum > 1e-10:
-            class_probs = class_hist / class_sum
-            class_probs_nonzero = class_probs[class_probs > 1e-10]
-
-            if len(class_probs_nonzero) > 0:
-                entropy_val = -np.sum(class_probs_nonzero * np.log(class_probs_nonzero))
-                total_entropy += entropy_val
-
+    for i in range(len(boundaries) - 1):
+        for j in range(len(boundaries) - 1):
+            region = hist_2d[boundaries[i]:boundaries[i + 1],
+                             boundaries[j]:boundaries[j + 1]]
+            total_entropy += renyi_entropy_region(region, q)
     return total_entropy
 
 
@@ -425,7 +435,12 @@ def process_single(file_name, folder_path, num_thresholds, func_name, de_configu
         print(f"[START] Processing {file_name} | {func_name} | thresholds={num_thresholds}")
 
         hist = calculate_histogram(image)
-        fitness_function = kapur_entropy if func_name == "kapur" else otsu_between_class_variance
+        if func_name == "renyi_2d":
+            _image = image
+            def fitness_function(hist, thresholds, _img=_image):
+                return calculate_renyi_entropy_2d(_img, thresholds)
+        else:
+            fitness_function = otsu_between_class_variance
 
         # Use optimized parameters or default
         config = {
@@ -553,10 +568,10 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
     de_configurator = DEGAConfigurator(seed=seed)
 
-    # Create tasks in the specific order: image1-kapur-all_levels, image1-otsu-all_levels, etc.
+    # Create tasks in the specific order: image1-renyi_2d-all_levels, image1-otsu-all_levels, etc.
     tasks = []
     for f in files:
-        for func in ["kapur", "otsu"]:  # Process kapur first for each image, then otsu
+        for func in ["renyi_2d", "otsu"]:  # Process renyi_2d first for each image, then otsu
             for t in threshold_levels:
                 tasks.append((f, folder_path, t, func, de_configurator, seed, images_folder))
 
@@ -601,13 +616,13 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
         df = df[column_order]
 
-        # Create a custom sorting key for fitness_function to ensure "kapur" comes before "otsu"
+        # Create a custom sorting key for fitness_function to ensure "renyi_2d" comes before "otsu"
         def fitness_function_order(func):
-            return 0 if func == "kapur" else 1
+            return 0 if func == "renyi_2d" else 1
 
         # Sort the results to match the desired order:
         # 1. First by image name
-        # 2. Then by fitness function (kapur first, then otsu) using custom order
+        # 2. Then by fitness function (renyi_2d first, then otsu) using custom order
         # 3. Then by thresholding level (ascending)
         df_sorted = df.copy()
         df_sorted['fitness_order'] = df_sorted['fitness_function'].apply(fitness_function_order)
