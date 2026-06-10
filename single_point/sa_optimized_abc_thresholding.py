@@ -18,62 +18,38 @@ warnings.filterwarnings('ignore')
 # OPTIMIZED Thresholding utilities (ORIGINAL PARAMETERS)
 # ---------------------------
 
-def apply_thresholds_optimized(image, thresholds):
-    """Optimized threshold application using vectorized operations"""
-    thresholds = np.sort(thresholds)
-    output = np.zeros_like(image, dtype=np.uint8)
-
-    # Vectorized threshold application
-    prev_threshold = 0
-    for threshold in thresholds:
-        mask = (image >= prev_threshold) & (image < threshold)
-        output[mask] = threshold
-        prev_threshold = threshold
-
-    # Handle values above the last threshold
-    output[image >= thresholds[-1]] = 255
-    return output
-
-
-def compute_2d_histogram(image, kernel_size=3):
-    """Compute the joint 2D histogram of (pixel intensity, local neighborhood mean)."""
-    local_mean = cv2.boxFilter(image.astype(np.float32), -1, (kernel_size, kernel_size))
-    local_mean = np.clip(np.round(local_mean), 0, 255).astype(np.int32)
-    flat_intensity = image.ravel().astype(np.int32)
-    flat_mean = local_mean.ravel()
-    hist_2d = np.zeros((256, 256), dtype=np.float64)
-    np.add.at(hist_2d, (flat_intensity, flat_mean), 1)
-    total = hist_2d.sum()
-    if total > 0:
-        hist_2d /= total
-    return hist_2d
-
-
-def renyi_entropy_region(p_region, q=2):
-    """Compute Rényi entropy of order q for a 2D probability sub-region."""
-    p_flat = p_region.ravel()
-    p_flat = p_flat[p_flat > 1e-12]
-    if len(p_flat) == 0:
-        return 0.0
-    p_norm = p_flat / p_flat.sum()
-    if q == 1:
-        return float(-np.sum(p_norm * np.log(p_norm)))
-    return float((1.0 / (1.0 - q)) * np.log(np.sum(p_norm ** q)))
-
-
-def calculate_renyi_entropy_2d(image, thresholds, q=2, kernel_size=3):
-    """2D Rényi entropy (order q=2) objective function for multilevel thresholding."""
+def apply_thresholds(image, thresholds):
+    """Apply multiple thresholds using per-segment midpoint values."""
     thresholds = sorted(thresholds)
+    segmented = np.zeros_like(image, dtype=np.uint8)
+    bounds = [0] + thresholds + [256]
+    for i in range(len(bounds) - 1):
+        mask = (image >= bounds[i]) & (image < bounds[i + 1])
+        midpoint = (bounds[i] + bounds[i + 1]) // 2
+        segmented[mask] = midpoint
+    return segmented
+
+
+def calculate_kapur_entropy(image, thresholds):
+    """Kapur's Entropy objective function for multilevel thresholding.
+    Maximises the sum of class entropies across threshold segments.
+    """
+    thresholds = sorted(thresholds)
+    hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+    total = hist.sum()
+    if total == 0:
+        return 0.0
+    prob = hist / total
     boundaries = [0] + thresholds + [256]
-    hist_2d = compute_2d_histogram(image, kernel_size)
     total_entropy = 0.0
     for i in range(len(boundaries) - 1):
-        for j in range(len(boundaries) - 1):
-            region = hist_2d[boundaries[i]:boundaries[i + 1],
-                             boundaries[j]:boundaries[j + 1]]
-            total_entropy += renyi_entropy_region(region, q)
+        class_prob = prob[boundaries[i]:boundaries[i + 1]]
+        class_sum = class_prob.sum()
+        if class_sum > 1e-12:
+            p_norm = class_prob / class_sum
+            p_nonzero = p_norm[p_norm > 1e-12]
+            total_entropy += float(-np.sum(p_nonzero * np.log(p_nonzero)))
     return total_entropy
-
 
 def otsu_variance_optimized(image, thresholds, hist=None, prob=None):
     """OPTIMIZED Otsu's between-class variance with pre-calculated histogram"""
@@ -116,11 +92,14 @@ def calculate_psnr_optimized(mse_value, max_pixel=255.0):
     return 10 * np.log10((max_pixel ** 2) / mse_value)
 
 
-def calculate_uniformity_measure_optimized(segmented):
-    """Optimized Uniformity Measure calculation"""
-    hist, _ = np.histogram(segmented.flatten(), bins=256, range=(0, 256))
-    prob = hist.astype(float) / np.sum(hist)
-    return np.sum(prob ** 2)
+def calculate_uniformity(segmented):
+    """Histogram-based uniformity measure of the segmented image."""
+    hist = cv2.calcHist([segmented], [0], None, [256], [0, 256]).flatten()
+    s = hist.sum()
+    if s == 0:
+        return 0.0
+    hist_normalised = hist / s
+    return float(np.sum(hist_normalised ** 2))
 
 
 def validate_metrics_optimized(ssim_val, mse_val, psnr_val, uniformity_val, filename=""):
@@ -169,7 +148,7 @@ class ABC_Optimized:
         return population
 
     def evaluate_optimized(self, solution):
-        """Evaluate solution using 2D Rényi entropy."""
+        """Evaluate solution using Kapur entropy."""
         return self.obj_func(self.image, solution)
 
     def evolve_optimized(self):
@@ -361,13 +340,13 @@ def process_single_image_optimized(args):
 
         image_results = []
 
-        def renyi_2d_wrapper(img, thresh):
-            return calculate_renyi_entropy_2d(img, thresh)
+        def kapur_wrapper(img, thresh):
+            return calculate_kapur_entropy(img, thresh)
 
         def otsu_wrapper(img, thresh, h=None, p=None):
             return otsu_variance_optimized(img, thresh, h, p)
 
-        for method, obj_func in [("renyi_2d", renyi_2d_wrapper), ("otsu", otsu_wrapper)]:
+        for method, obj_func in [("kapur", kapur_wrapper), ("otsu", otsu_wrapper)]:
             for m in threshold_levels:
                 start_time = time.time()
                 run_seed = int((start_time * 10000) % 1000000) + 1
@@ -394,21 +373,20 @@ def process_single_image_optimized(args):
                 execution_time_ms = (time.time() - start_time) * 1000
 
                 # Create segmented image and calculate metrics
-                segmented = apply_thresholds_optimized(image, best_sol)
+                segmented = apply_thresholds(image, best_sol)
 
                 # Calculate metrics
                 mse_value = calculate_mse_optimized(image, segmented)
                 psnr_value = calculate_psnr_optimized(mse_value)
                 ssim_value = ssim(image, segmented, data_range=255)
-                uniformity = calculate_uniformity_measure_optimized(segmented)
+                uniformity = calculate_uniformity(segmented)
 
                 # Validate metrics
                 ssim_value, mse_value, psnr_value, uniformity = validate_metrics_optimized(
                     ssim_value, mse_value, psnr_value, uniformity, filename
                 )
 
-                # Calculate both fitness values
-                renyi_2d_value = calculate_renyi_entropy_2d(image, best_sol)
+                kapur_value = calculate_kapur_entropy(image, best_sol)
                 otsu_value = otsu_variance_optimized(image, best_sol, hist, prob)
 
                 threshold_str = f"[{', '.join(map(str, best_sol))}]"
@@ -419,12 +397,12 @@ def process_single_image_optimized(args):
                     "thresholding_level": m,
                     "threshold_value": threshold_str,
                     "fitness_value": best_fit,
-                    "Renyi2D_Value": renyi_2d_value,
-                    "Otsu_Value": otsu_value,
+                    "kapur_value": kapur_value,
+                    "otsu_value": otsu_value,
                     "SSIM": ssim_value,
                     "MSE": mse_value,
                     "PSNR": psnr_value,
-                    "Uniformity Measure": uniformity,
+                    "Uniformity": uniformity,
                     "Seed": run_seed,
                     "Execution Time (ms)": execution_time_ms,
                     "ABC_pop_size": optimized_params['pop_size'],
@@ -489,12 +467,12 @@ def save_results_optimized(results, output_path):
     # Format numeric columns efficiently
     numeric_columns = {
         'fitness_value': "{:.8f}",
-        'Renyi2D_Value': "{:.8f}",
-        'Otsu_Value': "{:.8f}",
+        'kapur_value': "{:.8f}",
+        'otsu_value': "{:.8f}",
         'SSIM': "{:.6f}",
         'MSE': "{:.2f}",
         'PSNR': "{:.2f}",
-        'Uniformity Measure': "{:.6f}",
+        'Uniformity': "{:.6f}",
         'Execution Time (ms)': "{:.2f}"
     }
 
@@ -539,11 +517,11 @@ def validate_functions_optimized():
     total_pixels = np.sum(hist)
     prob = hist.astype(float) / total_pixels
 
-    renyi_2d_val = calculate_renyi_entropy_2d(test_image, thresholds)
+    kapur_val = calculate_kapur_entropy(test_image, thresholds)
     otsu_val = otsu_variance_optimized(test_image, thresholds, hist, prob)
 
     print(f"Validation completed successfully")
-    print(f"2D Rényi entropy: {renyi_2d_val:.6f}")
+    print(f"Kapur entropy: {kapur_val:.6f}")
     print(f"Otsu variance: {otsu_val:.6f}")
 
     return True
@@ -588,8 +566,10 @@ def process_images_optimized(folder_path, threshold_levels, output_path, use_par
 
 if __name__ == "__main__":
     # Configuration with ORIGINAL parameters
-    folder_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    # ── Update these two paths before running ─────────────────────────────────────
+    folder_path = r"path/to/your/images"          # folder containing input images
+    output_path = r"path/to/your/results"          # folder where results will be saved
+    # ──────────────────────────────────────────────────────────────────────────────
     threshold_levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]  # ORIGINAL FULL RANGE
 
     # Create output directory

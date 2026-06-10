@@ -24,77 +24,45 @@ def calculate_histogram(image):
     return hist / total
 
 
-def compute_2d_histogram(image, kernel_size=3):
-    """Compute the joint 2D histogram of (pixel intensity, local neighborhood mean)."""
-    local_mean = cv2.boxFilter(image.astype(np.float32), -1, (kernel_size, kernel_size))
-    local_mean = np.clip(np.round(local_mean), 0, 255).astype(np.int32)
-    flat_intensity = image.ravel().astype(np.int32)
-    flat_mean = local_mean.ravel()
-    hist_2d = np.zeros((256, 256), dtype=np.float64)
-    np.add.at(hist_2d, (flat_intensity, flat_mean), 1)
-    total = hist_2d.sum()
-    if total > 0:
-        hist_2d /= total
-    return hist_2d
-
-
-def renyi_entropy_region(p_region, q=2):
-    """Compute Rényi entropy of order q for a 2D probability sub-region."""
-    p_flat = p_region.ravel()
-    p_flat = p_flat[p_flat > 1e-12]
-    if len(p_flat) == 0:
-        return 0.0
-    p_norm = p_flat / p_flat.sum()
-    if q == 1:
-        return float(-np.sum(p_norm * np.log(p_norm)))
-    return float((1.0 / (1.0 - q)) * np.log(np.sum(p_norm ** q)))
-
-
-def calculate_renyi_entropy_2d(image, thresholds, q=2, kernel_size=3):
-    """2D Rényi entropy (order q=2) objective function for multilevel thresholding."""
+def calculate_kapur_entropy(image, thresholds):
+    """Kapur's Entropy objective function for multilevel thresholding.
+    Maximises the sum of class entropies across threshold segments.
+    """
     thresholds = sorted(thresholds)
+    hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+    total = hist.sum()
+    if total == 0:
+        return 0.0
+    prob = hist / total
     boundaries = [0] + thresholds + [256]
-    hist_2d = compute_2d_histogram(image, kernel_size)
     total_entropy = 0.0
     for i in range(len(boundaries) - 1):
-        for j in range(len(boundaries) - 1):
-            region = hist_2d[boundaries[i]:boundaries[i + 1],
-                             boundaries[j]:boundaries[j + 1]]
-            total_entropy += renyi_entropy_region(region, q)
+        class_prob = prob[boundaries[i]:boundaries[i + 1]]
+        class_sum = class_prob.sum()
+        if class_sum > 1e-12:
+            p_norm = class_prob / class_sum
+            p_nonzero = p_norm[p_norm > 1e-12]
+            total_entropy += float(-np.sum(p_nonzero * np.log(p_nonzero)))
     return total_entropy
 
-
-def otsu_between_class_variance(hist, thresholds):
-    """Calculate Otsu's between-class variance for multilevel thresholding."""
-    if len(thresholds) == 0:
-        return 0.0
-
+def calculate_otsu(hist, thresholds):
+    """Otsu's between-class variance for multilevel thresholding (unnormalised)."""
     thresholds = sorted(thresholds)
-    bins = [0] + thresholds + [256]
-
-    total_weight = np.sum(hist)
-    if total_weight == 0:
+    total = np.sum(hist)
+    if total == 0:
         return 0.0
-
-    global_mean = np.sum(np.arange(256) * hist) / total_weight
+    probs = hist / total
+    thresholds_ext = [0] + thresholds + [len(hist)]
+    global_mean = np.sum(probs * np.arange(len(hist)))
     between_class_variance = 0.0
-
-    for i in range(len(bins) - 1):
-        start = int(bins[i])
-        end = int(bins[i + 1])
-
-        if start >= end:
-            continue
-
-        class_hist = hist[start:end]
-        class_weight = np.sum(class_hist)
-
-        if class_weight > 1e-10:
-            intensity_values = np.arange(start, end)
-            class_mean = np.sum(intensity_values * class_hist) / class_weight
-            between_class_variance += class_weight * (class_mean - global_mean) ** 2
-
-    return between_class_variance / total_weight
+    for i in range(1, len(thresholds_ext)):
+        class_probs = probs[thresholds_ext[i - 1]:thresholds_ext[i]]
+        class_sum = np.sum(class_probs)
+        if class_sum > 0:
+            class_mean = (np.sum(class_probs * np.arange(thresholds_ext[i - 1], thresholds_ext[i]))
+                          / class_sum)
+            between_class_variance += class_sum * (class_mean - global_mean) ** 2
+    return float(between_class_variance)
 
 
 def calculate_ssim(original, segmented):
@@ -133,83 +101,25 @@ def calculate_psnr(original, segmented):
     return 10 * math.log10((max_pixel ** 2) / mse)
 
 
-def calculate_uniformity_measure(segmented, thresholds):
-    """Calculate uniformity measure based on within-class variance (corrected version)."""
-    if len(thresholds) == 0:
+def calculate_uniformity(image):
+    """Histogram-based uniformity measure of the segmented image."""
+    hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+    s = hist.sum()
+    if s == 0:
         return 0.0
-
-    total_pixels = segmented.size
-    if total_pixels == 0:
-        return 0.0
-
-    sorted_thresholds = sorted(thresholds)
-
-    # Create class labels and calculate class means
-    class_means = []
-    class_weights = []
-
-    # Class 0: pixels <= first threshold
-    mask_0 = segmented <= sorted_thresholds[0]
-    if np.sum(mask_0) > 0:
-        class_means.append(np.mean(segmented[mask_0]))
-        class_weights.append(np.sum(mask_0) / total_pixels)
-
-    # Middle classes
-    for i in range(1, len(sorted_thresholds)):
-        mask = (segmented > sorted_thresholds[i - 1]) & (segmented <= sorted_thresholds[i])
-        if np.sum(mask) > 0:
-            class_means.append(np.mean(segmented[mask]))
-            class_weights.append(np.sum(mask) / total_pixels)
-
-    # Last class: pixels > last threshold
-    mask_last = segmented > sorted_thresholds[-1]
-    if np.sum(mask_last) > 0:
-        class_means.append(np.mean(segmented[mask_last]))
-        class_weights.append(np.sum(mask_last) / total_pixels)
-
-    if len(class_means) == 0:
-        return 0.0
-
-    # Calculate overall mean
-    overall_mean = np.mean(segmented)
-
-    # Calculate between-class variance
-    between_class_variance = 0.0
-    for mean, weight in zip(class_means, class_weights):
-        between_class_variance += weight * (mean - overall_mean) ** 2
-
-    # Calculate total variance
-    total_variance = np.var(segmented)
-
-    if total_variance == 0:
-        return 1.0
-
-    # Uniformity measure = between_class_variance / total_variance
-    # This measures how well the thresholds separate the classes
-    uniformity = between_class_variance / total_variance
-    return max(0.0, min(1.0, uniformity))
+    hist_normalised = hist / s
+    return float(np.sum(hist_normalised ** 2))
 
 
 def apply_thresholds(image, thresholds):
-    """Apply multiple thresholds to segment an image."""
-    if len(thresholds) == 0:
-        return np.zeros_like(image)
-
+    """Apply multiple thresholds using per-segment midpoint values."""
     thresholds = sorted(thresholds)
     segmented = np.zeros_like(image, dtype=np.uint8)
-
-    segmented[image <= thresholds[0]] = 0
-
-    for i in range(1, len(thresholds)):
-        mask = (image > thresholds[i - 1]) & (image <= thresholds[i])
-        segmented[mask] = i
-
-    segmented[image > thresholds[-1]] = len(thresholds)
-
-    max_class = len(thresholds)
-    if max_class > 0:
-        segmented = (segmented * (255 // max_class)).astype(np.uint8)
-
+    bounds = [0] + thresholds + [256]
+    for i in range(len(bounds) - 1):
+        mask = (image >= bounds[i]) & (image < bounds[i + 1])
+        midpoint = (bounds[i] + bounds[i + 1]) // 2
+        segmented[mask] = midpoint
     return segmented
 
 
@@ -386,12 +296,12 @@ def process_single(file_name, folder_path, num_thresholds, func_name, seed=None,
         print(f"[START] Processing {file_name} | {func_name} | thresholds={num_thresholds}")
 
         hist = calculate_histogram(image)
-        if func_name == "renyi_2d":
+        if func_name == "kapur":
             _image = image
             def fitness_function(hist, thresholds, _img=_image):
-                return calculate_renyi_entropy_2d(_img, thresholds)
+                return calculate_kapur_entropy(_img, thresholds)
         else:
-            fitness_function = otsu_between_class_variance
+            fitness_function = calculate_otsu
 
         # ABC parameters from literature (typical values)
         config = {
@@ -410,7 +320,7 @@ def process_single(file_name, folder_path, num_thresholds, func_name, seed=None,
         ssim_value = calculate_ssim(image, segmented_image)
         mse_value = calculate_mse(image, segmented_image)
         psnr_value = calculate_psnr(image, segmented_image)
-        uniformity = calculate_uniformity_measure(segmented_image, best_thresholds)
+        uniformity = calculate_uniformity(segmented_image)
 
         # Format threshold values exactly as requested
         threshold_value_str = "[" + ", ".join(map(str, best_thresholds)) + "]"
@@ -434,7 +344,7 @@ def process_single(file_name, folder_path, num_thresholds, func_name, seed=None,
             "SSIM": ssim_value,
             "MSE": mse_value,
             "PSNR": psnr_value,
-            "Uniformity Measure": uniformity,
+            "Uniformity": uniformity,
             "Seed": run_seed,
             "Execution Time (ms)": execution_time_ms
         }
@@ -522,7 +432,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
     all_results = []
 
     for file_name in files:
-        for func_name in ["renyi_2d", "otsu"]:
+        for func_name in ["kapur", "otsu"]:
             # Process all threshold levels for this image-function combination
             for num_thresholds in threshold_levels:
                 result = process_single(file_name, folder_path, num_thresholds, func_name, seed, images_folder)
@@ -542,7 +452,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
             'SSIM',
             'MSE',
             'PSNR',
-            'Uniformity Measure',
+            'Uniformity',
             'Seed',
             'Execution Time (ms)'
         ]
@@ -567,8 +477,8 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
         if 'PSNR' in df.columns:
             df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else x)
 
-        if 'Uniformity Measure' in df.columns:
-            df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:.6f}" if pd.notna(x) else x)
+        if 'Uniformity' in df.columns:
+            df['Uniformity'] = df['Uniformity'].apply(lambda x: f"{x:.6f}" if pd.notna(x) else x)
 
         if 'Execution Time (ms)' in df.columns:
             df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else x)
@@ -588,7 +498,7 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
         # Display summary statistics
         print("\nSummary Statistics:")
-        print(df[['fitness_value', 'SSIM', 'PSNR', 'MSE', 'Uniformity Measure']].describe())
+        print(df[['fitness_value', 'SSIM', 'PSNR', 'MSE', 'Uniformity']].describe())
 
     else:
         print("No valid results to save")
@@ -603,9 +513,11 @@ def process_images_in_folder(folder_path, threshold_levels, output_file, n_jobs=
 
 if __name__ == "__main__":
     # Configuration with your specific paths
-    folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]  # You can extend this to [2, 3, 4, 5, 6, 7, 8, 9, 10]
-    output_dir = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    # ── Update these two paths before running ─────────────────────────────────────
+    folder = r"path/to/your/images"          # folder containing input images
+    output_dir = r"path/to/your/results"          # folder where results will be saved
+    # ──────────────────────────────────────────────────────────────────────────────
+    levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
 
     # Create results directory
     os.makedirs(output_dir, exist_ok=True)

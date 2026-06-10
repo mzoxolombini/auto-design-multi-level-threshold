@@ -3,90 +3,35 @@ import cv2
 import numpy as np
 import random
 import pandas as pd
-from scipy.ndimage import correlate
 from joblib import Parallel, delayed
-import sys
 import time
 import math
+from skimage.metrics import structural_similarity as ssim_skimage
 
 
 # ----------------- Corrected Utility Functions -----------------
 
-def ssim(image1, image2):
-    """Calculate Structural Similarity Index between two images."""
-    img1 = image1.astype(np.float64) / 255.0
-    img2 = image2.astype(np.float64) / 255.0
 
-    C1 = 0.01 ** 2
-    C2 = 0.03 ** 2
-
-    kernel_size = 11
-    sigma = 1.5
-    x = np.arange(-kernel_size // 2 + 1, kernel_size // 2 + 1)
-    x, y = np.meshgrid(x, x)
-    kernel = np.exp(-(x ** 2 + y ** 2) / (2 * sigma ** 2))
-    kernel = kernel / kernel.sum()
-
-    mu1 = correlate(img1, kernel, mode='reflect')
-    mu2 = correlate(img2, kernel, mode='reflect')
-
-    mu1_sq = mu1 ** 2
-    mu2_sq = mu2 ** 2
-    mu1_mu2 = mu1 * mu2
-
-    sigma1_sq = correlate(img1 ** 2, kernel, mode='reflect') - mu1_sq
-    sigma2_sq = correlate(img2 ** 2, kernel, mode='reflect') - mu2_sq
-    sigma12 = correlate(img1 * img2, kernel, mode='reflect') - mu1_mu2
-
-    sigma1_sq = np.maximum(sigma1_sq, 0)
-    sigma2_sq = np.maximum(sigma2_sq, 0)
-
-    numerator = (2 * mu1_mu2 + C1) * (2 * sigma12 + C2)
-    denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
-
-    ssim_map = numerator / (denominator + 1e-10)
-    return float(np.clip(np.mean(ssim_map), -1.0, 1.0))
-
-
-def compute_2d_histogram(image, kernel_size=3):
-    """Compute the joint 2D histogram of (pixel intensity, local neighborhood mean)."""
-    local_mean = cv2.boxFilter(image.astype(np.float32), -1, (kernel_size, kernel_size))
-    local_mean = np.clip(np.round(local_mean), 0, 255).astype(np.int32)
-    flat_intensity = image.ravel().astype(np.int32)
-    flat_mean = local_mean.ravel()
-    hist_2d = np.zeros((256, 256), dtype=np.float64)
-    np.add.at(hist_2d, (flat_intensity, flat_mean), 1)
-    total = hist_2d.sum()
-    if total > 0:
-        hist_2d /= total
-    return hist_2d
-
-
-def renyi_entropy_region(p_region, q=2):
-    """Compute Rényi entropy of order q for a 2D probability sub-region."""
-    p_flat = p_region.ravel()
-    p_flat = p_flat[p_flat > 1e-12]
-    if len(p_flat) == 0:
-        return 0.0
-    p_norm = p_flat / p_flat.sum()
-    if q == 1:
-        return float(-np.sum(p_norm * np.log(p_norm)))
-    return float((1.0 / (1.0 - q)) * np.log(np.sum(p_norm ** q)))
-
-
-def calculate_renyi_entropy_2d(image, thresholds, q=2, kernel_size=3):
-    """2D Rényi entropy (order q=2) objective function for multilevel thresholding."""
+def calculate_kapur_entropy(image, thresholds):
+    """Kapur's Entropy objective function for multilevel thresholding.
+    Maximises the sum of class entropies across threshold segments.
+    """
     thresholds = sorted(thresholds)
+    hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+    total = hist.sum()
+    if total == 0:
+        return 0.0
+    prob = hist / total
     boundaries = [0] + thresholds + [256]
-    hist_2d = compute_2d_histogram(image, kernel_size)
     total_entropy = 0.0
     for i in range(len(boundaries) - 1):
-        for j in range(len(boundaries) - 1):
-            region = hist_2d[boundaries[i]:boundaries[i + 1],
-                             boundaries[j]:boundaries[j + 1]]
-            total_entropy += renyi_entropy_region(region, q)
+        class_prob = prob[boundaries[i]:boundaries[i + 1]]
+        class_sum = class_prob.sum()
+        if class_sum > 1e-12:
+            p_norm = class_prob / class_sum
+            p_nonzero = p_norm[p_norm > 1e-12]
+            total_entropy += float(-np.sum(p_nonzero * np.log(p_nonzero)))
     return total_entropy
-
 
 def calculate_otsu(hist, thresholds):
     """Calculate Otsu's between-class variance for multilevel thresholding."""
@@ -132,35 +77,24 @@ def calculate_psnr(mse_value, max_pixel=255.0):
 
 
 def calculate_uniformity(image):
-    """Calculate uniformity measure of an image."""
+    """Histogram-based uniformity measure of the segmented image."""
     hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
-    total = hist.sum()
-    if total == 0:
+    s = hist.sum()
+    if s == 0:
         return 0.0
-    hist_normalized = hist / total
-    return float(np.sum(hist_normalized ** 2))
+    hist_normalised = hist / s
+    return float(np.sum(hist_normalised ** 2))
 
 
 def apply_thresholds(image, thresholds):
-    """Apply multiple thresholds to segment an image."""
-    if len(thresholds) == 0:
-        return np.zeros_like(image)
-
+    """Apply multiple thresholds using per-segment midpoint values."""
     thresholds = sorted(thresholds)
     segmented = np.zeros_like(image, dtype=np.uint8)
-
-    segmented[image <= thresholds[0]] = 0
-
-    for i in range(1, len(thresholds)):
-        mask = (image > thresholds[i - 1]) & (image <= thresholds[i])
-        segmented[mask] = i
-
-    segmented[image > thresholds[-1]] = len(thresholds)
-
-    max_val = len(thresholds)
-    if max_val > 0:
-        segmented = (segmented * (255 // max_val)).astype(np.uint8)
-
+    bounds = [0] + thresholds + [256]
+    for i in range(len(bounds) - 1):
+        mask = (image >= bounds[i]) & (image < bounds[i + 1])
+        midpoint = (bounds[i] + bounds[i + 1]) // 2
+        segmented[mask] = midpoint
     return segmented
 
 
@@ -454,10 +388,10 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
     hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
 
     # Select fitness function
-    if fitness_function == "renyi_2d":
+    if fitness_function == "kapur":
         _image = image
         def fitness_func(hist, thresholds, _img=_image):
-            return calculate_renyi_entropy_2d(_img, thresholds)
+            return calculate_kapur_entropy(_img, thresholds)
     else:
         fitness_func = calculate_otsu
 
@@ -516,7 +450,7 @@ def process_single(filename, folder_path, num_thresholds, fitness_function, abc_
         'SSIM': format_number(ssim_value, 6),
         'MSE': format_number(mse, 2),
         'PSNR': format_number(psnr, 2),
-        'Uniformity Measure': format_number(uniformity_value, 6),
+        'Uniformity': format_number(uniformity_value, 6),
         'Seed': run_seed,
         'Execution Time (ms)': format_number(execution_time_ms, 2)
     }
@@ -549,12 +483,12 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
 
     print("Using default ABC configuration:", abc_config)
 
-    # Create tasks in the specific order: image1-renyi_2d-all_levels, image1-otsu-all_levels, image2-renyi_2d-all_levels, etc.
+    # Create tasks in the specific order: image1-kapur-all_levels, image1-otsu-all_levels, image2-kapur-all_levels, etc.
     tasks = []
     base_seed = 42  # Fixed base seed for reproducibility
 
     for f in files:
-        for func in ["renyi_2d", "otsu"]:  # Process renyi_2d first for each image, then otsu
+        for func in ["kapur", "otsu"]:  # Process kapur first for each image, then otsu
             for t in threshold_levels:
                 tasks.append((f, folder_path, t, func, abc_config, 42, images_folder, base_seed))
 
@@ -582,19 +516,19 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
     # Use exact column names as requested
     column_order = [
         'image_name', 'fitness_function', 'thresholding_level', 'threshold_value',
-        'fitness_value', 'SSIM', 'MSE', 'PSNR', 'Uniformity Measure',
+        'fitness_value', 'SSIM', 'MSE', 'PSNR', 'Uniformity',
         'Seed', 'Execution Time (ms)'
     ]
 
     df = df[column_order]
 
-    # Create a custom sorting key for fitness_function to ensure "renyi_2d" comes before "otsu"
+    # Create a custom sorting key for fitness_function to ensure "kapur" comes before "otsu"
     def fitness_function_order(func):
-        return 0 if func == "renyi_2d" else 1
+        return 0 if func == "kapur" else 1
 
     # Sort the results to match your desired order:
     # 1. First by image name
-    # 2. Then by fitness function (renyi_2d first, then otsu) using custom order
+    # 2. Then by fitness function (kapur first, then otsu) using custom order
     # 3. Then by thresholding level (ascending)
     df_sorted = df.copy()
     df_sorted['fitness_order'] = df_sorted['fitness_function'].apply(fitness_function_order)
@@ -635,12 +569,12 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
     print("\nResults preview (first 12 rows):")
     print("-" * 120)
     print(
-        f"{'image_name':<15} {'fitness_function':<15} {'thresholding_level':<18} {'threshold_value':<15} {'fitness_value':<15} {'SSIM':<10} {'MSE':<10} {'PSNR':<8} {'Uniformity Measure':<18} {'Seed':<10} {'Execution Time (ms)':<15}")
+        f"{'image_name':<15} {'fitness_function':<15} {'thresholding_level':<18} {'threshold_value':<15} {'fitness_value':<15} {'SSIM':<10} {'MSE':<10} {'PSNR':<8} {'Uniformity':<18} {'Seed':<10} {'Execution Time (ms)':<15}")
     print("-" * 120)
 
     for i, row in df_sorted.head(12).iterrows():
         print(
-            f"{row['image_name']:<15} {row['fitness_function']:<15} {row['thresholding_level']:<18} {row['threshold_value']:<15} {row['fitness_value']:<15} {row['SSIM']:<10} {row['MSE']:<10} {row['PSNR']:<8} {row['Uniformity Measure']:<18} {row['Seed']:<10} {row['Execution Time (ms)']:<15}")
+            f"{row['image_name']:<15} {row['fitness_function']:<15} {row['thresholding_level']:<18} {row['threshold_value']:<15} {row['fitness_value']:<15} {row['SSIM']:<10} {row['MSE']:<10} {row['PSNR']:<8} {row['Uniformity']:<18} {row['Seed']:<10} {row['Execution Time (ms)']:<15}")
 
     return df_sorted
 
@@ -648,8 +582,10 @@ def process_images_in_folder(folder_path, threshold_levels, output_path, n_jobs=
 # ----------------- Main Execution -----------------
 
 if __name__ == "__main__":
-    folder = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    output = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    # ── Update these two paths before running ─────────────────────────────────────
+    folder = r"path/to/your/images"          # folder containing input images
+    output = r"path/to/your/results"          # folder where results will be saved
+    # ──────────────────────────────────────────────────────────────────────────────
     levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]  # Added level 4 to match your example
 
     df = process_images_in_folder(folder, levels, output, n_jobs=1)
