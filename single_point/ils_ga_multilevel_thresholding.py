@@ -6,65 +6,39 @@ import pandas as pd
 import time
 from skimage.metrics import structural_similarity as ssim
 
-# Set initial seed for reproducibility
-SEED = 102
-random.seed(SEED)
-np.random.seed(SEED)
-
-
 # Apply thresholds using midpoints
 def apply_thresholds(image, thresholds):
+    """Apply multiple thresholds using per-segment midpoint values."""
     thresholds = sorted(thresholds)
-    segmented = np.zeros_like(image)
-    bounds = [0] + thresholds + [255]
-
+    segmented = np.zeros_like(image, dtype=np.uint8)
+    bounds = [0] + thresholds + [256]
     for i in range(len(bounds) - 1):
         mask = (image >= bounds[i]) & (image < bounds[i + 1])
         midpoint = (bounds[i] + bounds[i + 1]) // 2
         segmented[mask] = midpoint
-
     return segmented
 
 
-def compute_2d_histogram(image, kernel_size=3):
-    """Compute the joint 2D histogram of (pixel intensity, local neighborhood mean)."""
-    local_mean = cv2.boxFilter(image.astype(np.float32), -1, (kernel_size, kernel_size))
-    local_mean = np.clip(np.round(local_mean), 0, 255).astype(np.int32)
-    flat_intensity = image.ravel().astype(np.int32)
-    flat_mean = local_mean.ravel()
-    hist_2d = np.zeros((256, 256), dtype=np.float64)
-    np.add.at(hist_2d, (flat_intensity, flat_mean), 1)
-    total = hist_2d.sum()
-    if total > 0:
-        hist_2d /= total
-    return hist_2d
-
-
-def renyi_entropy_region(p_region, q=2):
-    """Compute Rényi entropy of order q for a 2D probability sub-region."""
-    p_flat = p_region.ravel()
-    p_flat = p_flat[p_flat > 1e-12]
-    if len(p_flat) == 0:
-        return 0.0
-    p_norm = p_flat / p_flat.sum()
-    if q == 1:
-        return float(-np.sum(p_norm * np.log(p_norm)))
-    return float((1.0 / (1.0 - q)) * np.log(np.sum(p_norm ** q)))
-
-
-def calculate_renyi_entropy_2d(image, thresholds, q=2, kernel_size=3):
-    """2D Rényi entropy (order q=2) objective function for multilevel thresholding."""
+def calculate_kapur_entropy(image, thresholds):
+    """Kapur's Entropy objective function for multilevel thresholding.
+    Maximises the sum of class entropies across threshold segments.
+    """
     thresholds = sorted(thresholds)
+    hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
+    total = hist.sum()
+    if total == 0:
+        return 0.0
+    prob = hist / total
     boundaries = [0] + thresholds + [256]
-    hist_2d = compute_2d_histogram(image, kernel_size)
     total_entropy = 0.0
     for i in range(len(boundaries) - 1):
-        for j in range(len(boundaries) - 1):
-            region = hist_2d[boundaries[i]:boundaries[i + 1],
-                             boundaries[j]:boundaries[j + 1]]
-            total_entropy += renyi_entropy_region(region, q)
+        class_prob = prob[boundaries[i]:boundaries[i + 1]]
+        class_sum = class_prob.sum()
+        if class_sum > 1e-12:
+            p_norm = class_prob / class_sum
+            p_nonzero = p_norm[p_norm > 1e-12]
+            total_entropy += float(-np.sum(p_nonzero * np.log(p_nonzero)))
     return total_entropy
-
 
 def calculate_otsu(hist, thresholds):
     thresholds = sorted(thresholds)
@@ -109,10 +83,13 @@ def calculate_ssim_value(image1, image2):
 
 
 def calculate_uniformity(image):
-    """Calculate Histogram Uniformity Measure"""
+    """Histogram-based uniformity measure of the segmented image."""
     hist = cv2.calcHist([image], [0], None, [256], [0, 256]).flatten()
-    hist_normalized = hist / hist.sum()
-    return np.sum(hist_normalized ** 2)
+    s = hist.sum()
+    if s == 0:
+        return 0.0
+    hist_normalised = hist / s
+    return float(np.sum(hist_normalised ** 2))
 
 
 def validate_metrics(ssim_val, mse_val, psnr_val, uniformity_val, filename=""):
@@ -136,7 +113,7 @@ def validate_metrics(ssim_val, mse_val, psnr_val, uniformity_val, filename=""):
 
 
 class GeneticAlgorithmILS:
-    def __init__(self, params, num_thresholds, image, fitness_function="renyi_2d"):
+    def __init__(self, params, num_thresholds, image, fitness_function="kapur"):
         self.params = params
         self.pop_size = self.params["pop_size"]
         self.selection_method = self.params["selection_method"]
@@ -155,8 +132,8 @@ class GeneticAlgorithmILS:
         return [sorted(random.sample(range(1, 255), self.num_thresholds)) for _ in range(self.pop_size)]
 
     def fitness(self, individual):
-        if self.fitness_function == "renyi_2d":
-            return calculate_renyi_entropy_2d(self.image, individual)
+        if self.fitness_function == "kapur":
+            return calculate_kapur_entropy(self.image, individual)
         elif self.fitness_function == "otsu":
             return calculate_otsu(self.hist, individual)
         else:
@@ -170,7 +147,7 @@ class GeneticAlgorithmILS:
 
     def tournament_selection(self, size=3):
         selected = random.sample(self.population, size)
-        selected.sort(key=self.fitness, reverse=(self.fitness_function == "renyi_2d"))
+        selected.sort(key=self.fitness, reverse=True)
         return selected[0]
 
     def crossover(self, parent1, parent2):
@@ -230,24 +207,6 @@ class GeneticAlgorithmILS:
         return best_solution, best_fitness
 
 
-def create_thresholded_image(image, thresholds):
-    thresholds = sorted(thresholds)
-    thresholded = np.zeros_like(image)
-
-    for i in range(len(thresholds) + 1):
-        lower = 0 if i == 0 else thresholds[i - 1]
-        upper = 255 if i == len(thresholds) else thresholds[i]
-
-        if i == 0:
-            mask = image <= upper
-        elif i == len(thresholds):
-            mask = image > lower
-        else:
-            mask = (image > lower) & (image <= upper)
-
-        thresholded[mask] = int(i * (255 / (len(thresholds) + 1)))
-
-    return thresholded
 
 
 def process_images_in_folder(folder_path, threshold_levels, param_settings, output_path):
@@ -272,7 +231,7 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
                     print(f"Could not load image: {filename}")
                     continue
 
-                for fitness_function_name in ["renyi_2d", "otsu"]:
+                for fitness_function_name in ["kapur", "otsu"]:
                     for num_thresholds in threshold_levels:
                         if num_thresholds not in param_settings:
                             continue
@@ -319,7 +278,7 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
                             'SSIM': ssim_value,
                             'MSE': mse_value,
                             'PSNR': psnr_value,
-                            'Uniformity Measure': uniformity_value,
+                            'Uniformity': uniformity_value,
                             'Seed': run_seed,
                             'Execution Time (ms)': execution_time_ms
                         })
@@ -346,7 +305,7 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
         df['SSIM'] = df['SSIM'].apply(lambda x: f"{x:.6f}")
         df['MSE'] = df['MSE'].apply(lambda x: f"{x:.2f}")
         df['PSNR'] = df['PSNR'].apply(lambda x: f"{x:.2f}")
-        df['Uniformity Measure'] = df['Uniformity Measure'].apply(lambda x: f"{x:.6f}")
+        df['Uniformity'] = df['Uniformity'].apply(lambda x: f"{x:.6f}")
         df['Execution Time (ms)'] = df['Execution Time (ms)'].apply(lambda x: f"{x:.2f}")
 
         df.to_excel(output_file, index=False)
@@ -357,7 +316,7 @@ def process_images_in_folder(folder_path, threshold_levels, param_settings, outp
         print(f"MSE range: [{min(r['MSE'] for r in results):.2f}, {max(r['MSE'] for r in results):.2f}]")
         print(f"PSNR range: [{min(r['PSNR'] for r in results):.2f}, {max(r['PSNR'] for r in results):.2f}]")
         print(
-            f"Uniformity range: [{min(r['Uniformity Measure'] for r in results):.6f}, {max(r['Uniformity Measure'] for r in results):.6f}]")
+            f"Uniformity range: [{min(r['Uniformity'] for r in results):.6f}, {max(r['Uniformity'] for r in results):.6f}]")
 
         print(f"Results saved to {output_file}")
         return df
@@ -390,8 +349,10 @@ def get_initial_params():
 
 
 if __name__ == "__main__":
-    folder_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images"
-    output_path = r"C:\Users\mzoxo\OneDrive\Documents\standard_test_images\results"
+    # ── Update these two paths before running ─────────────────────────────────────
+    folder_path = r"path/to/your/images"          # folder containing input images
+    output_path = r"path/to/your/results"          # folder where results will be saved
+    # ──────────────────────────────────────────────────────────────────────────────
 
     threshold_levels = [2, 3, 4, 5, 6, 7, 8, 9, 10]
     param_settings = get_initial_params()
